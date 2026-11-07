@@ -1,10 +1,18 @@
 // Placement rules shared by the builder and by any agent helping it.
 // Pure: works only from the view produced by siteView() in common.js.
-import { total, subtract, GROUPS } from '../items.js';
-import { requirements, canSupply, cellKey } from '../blueprint.js';
+import { total, subtract } from '../items.js';
+import { requirements, canSupply, cellKey, blueprintNeeds } from '../blueprint.js';
+import { COMPONENTS } from '../plan.js';
 import { STORAGE_STALE_MS } from './common.js';
 
+// Every block the house is made of, and so worth holding on to or fetching.
+export const BUILD_ITEMS = Object.keys(blueprintNeeds());
+// Cells this high above the floor can't be reached standing on the floor inside (eye ~2.6 blocks up,
+// reach ~4.4): the top roof stairs and the ridge need a pillar.
+export const PILLAR_HEIGHT = 7;
+
 export const free = v => cell => !v.failed.has(cellKey(cell));
+export const isHigh = (v, cell) => cell.y - v.origin.y >= PILLAR_HEIGHT;
 
 /** Materials the site still needs that this agent is not already carrying. */
 export function outstanding(v) {
@@ -13,27 +21,38 @@ export function outstanding(v) {
 
 export const houseComplete = v => v.siteLoaded && !v.report.missing.length && !v.report.supports.length && !v.report.obstructed.length;
 
-/** A cell this agent can place right now from its own inventory. Helpers work from the other end of the list. */
+/**
+ * A cell this agent can place right now from its own inventory, walking to it.
+ * Helpers work from the other end of the list to stay out of the builder's way.
+ */
 export function nextPlacement(v, { helper = false } = {}) {
   const cells = helper ? [...v.placeable].reverse() : v.placeable;
-  return cells.find(c => free(v)(c) && canSupply(v.inv, c.material)) || null;
+  return cells.find(c => free(v)(c) && !isHigh(v, c) && canSupply(v.inv, c.material)) || null;
 }
 
-const BUILD_GROUPS = ['cobblestone', 'planks', 'log', 'door', 'glass_pane', 'stairs'];
-const buildGroupOf = name => BUILD_GROUPS.find(group => GROUPS[group](name));
-
-/** Fetch outstanding materials from storage when it might have them (optionally only some groups). */
+/** Fetch outstanding materials from storage when it might have them (optionally only some). */
 export function fetchFromStorage(v, only = null) {
   const need = outstanding(v);
   if (!v.storageExists || !Object.keys(need).length) return null;
   const stale = !v.storage || v.storage.age > STORAGE_STALE_MS;
-  const available = Object.keys(need).filter(group => group !== 'filler' && (!only || only.has(group)) &&
-    (stale || total(v.storage.contents, group) > 0));
+  const available = Object.keys(need).filter(item => item !== 'filler' && (!only || only.has(item)) &&
+    (stale || total(v.storage.contents, item) > 0));
   if (!available.length) return null;
   return {
-    type: 'withdraw', wants: available.map(group => ({ group, count: Math.min(need[group], 64) })),
-    say: `Fetching ${available.join(', ')} from storage`,
+    type: 'withdraw', wants: available.map(item => ({ group: item, count: Math.min(need[item], 64) })),
+    say: `Fetching ${available.map(i => i.replace('oak_', '')).join(', ')} from storage`,
   };
+}
+
+/** Craft a component the house still needs from oak planks we carry, if we have enough for a batch. */
+export function craftFromCarried(v) {
+  const need = outstanding(v);
+  for (const { item, planks, makes } of COMPONENTS) {
+    if (!need[item]) continue;
+    const batches = Math.min(Math.ceil(need[item] / makes), Math.floor(total(v.inv, 'oak_planks') / planks));
+    if (batches > 0) return { type: 'make', item, count: Math.min(need[item], batches * makes), say: `Crafting ${item.replace('oak_', 'oak ')} from my planks` };
+  }
+  return null;
 }
 
 /**
@@ -42,12 +61,12 @@ export function fetchFromStorage(v, only = null) {
  */
 export function helpBuild(v) {
   if (houseComplete(v)) return { type: 'done', say: 'The house is complete; nothing left to do' };
-  if (!v.siteLoaded || v.distanceToSite > 24) return { type: 'travel', target: v.origin.offset(2, 0, -4), range: 3, say: 'All resources gathered; heading to the house to help' };
+  if (!v.siteLoaded || v.distanceToSite > 24) return { type: 'travel', target: v.origin.offset(4, 0, -4), range: 3, say: 'All resources gathered; heading to the house to help' };
   const cell = nextPlacement(v, { helper: true });
-  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Helping the builder: placing ${cell.material}` };
+  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Helping the builder: placing ${cell.material.replace('oak_', 'oak ')}` };
   // Hand over building materials we cannot place yet, so the builder can use them; fetch only what we can place now.
-  const placeableNow = new Set(v.placeable.filter(free(v)).map(c => c.material));
-  const idle = Object.keys(v.inv).filter(name => buildGroupOf(name) && !placeableNow.has(buildGroupOf(name)));
+  const placeableNow = new Set(v.placeable.filter(c => free(v)(c) && !isHigh(v, c)).map(c => c.material));
+  const idle = Object.keys(v.inv).filter(name => BUILD_ITEMS.includes(name) && !placeableNow.has(name));
   if (idle.length && v.storageExists) {
     return { type: 'deposit', keep: name => (idle.includes(name) ? 0 : 999), say: 'Helping the builder: storing materials it will need' };
   }

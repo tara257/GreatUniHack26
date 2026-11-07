@@ -1,7 +1,8 @@
 // Low-level actions an agent can carry out. Roles decide *what* to do; these do it.
 // Every action re-checks ctx.alive() after each await so pause/death/disconnect cancel promptly.
 import pathfinderModule from 'mineflayer-pathfinder';
-import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, planksFor, dominantWood } from './items.js';
+import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, planksFor, dominantWood, woodOf } from './items.js';
+import { COMPONENTS } from './plan.js';
 import { HOUSE, insideFootprint } from './blueprint.js';
 import { Vec3, toVec, storageAnchor, storageChests, buildOrigin } from './world.js';
 
@@ -24,8 +25,11 @@ export function check(ctx) { if (!ctx.alive()) throw new Cancelled('Task cancell
 export async function go(ctx, goal, ms = 20000) {
   check(ctx);
   const { bot } = ctx;
-  const timer = setTimeout(() => { if (ctx.alive()) bot.pathfinder.setGoal(null); }, ms);
-  try { await bot.pathfinder.goto(goal); } finally { clearTimeout(timer); }
+  let timedOut = false;
+  const timer = setTimeout(() => { if (ctx.alive()) { timedOut = true; bot.pathfinder.setGoal(null); } }, ms);
+  try { await bot.pathfinder.goto(goal); }
+  catch (error) { throw timedOut ? new Error(`Gave up walking after ${ms / 1000}s`) : error; }
+  finally { clearTimeout(timer); }
   check(ctx);
 }
 
@@ -39,14 +43,42 @@ const itemId = (bot, name) => {
 
 // ── Movement and exploration ────────────────────────────────────────────────
 
+export const HOP = 32;
+
+/** Walk towards a target; far targets are approached in hops so path planning never has to cover the whole trip. */
 export async function travel(ctx, target, range = 3, ms = 25000) {
   const p = toVec(target);
+  const me = ctx.bot.entity.position;
+  const flat = Math.hypot(p.x - me.x, p.z - me.z);
+  if (flat > HOP + 8) {
+    const k = HOP / flat;
+    await go(ctx, new GoalXZ(Math.floor(me.x + (p.x - me.x) * k), Math.floor(me.z + (p.z - me.z) * k)), ms);
+    return;
+  }
   await go(ctx, new GoalNear(p.x, p.y, p.z, range), ms);
 }
 
+// Agents explore within this distance of home (the storage spot) and turn back beyond it.
+export const HOME_RANGE = 96;
+
+/**
+ * Walk a short leg in roughly the agent's preferred direction. Each blocked leg turns the next one
+ * by a fixed amount, so a wall of water or a cliff is eventually walked around; beyond HOME_RANGE
+ * the agent heads back towards home instead.
+ */
 export async function explore(ctx, angle, distance = 16, ms = 15000) {
   const p = ctx.bot.entity.position;
-  await go(ctx, new GoalXZ(Math.floor(p.x + Math.cos(angle) * distance), Math.floor(p.z + Math.sin(angle) * distance)), ms);
+  const home = storageAnchor(ctx.bot);
+  const turns = ctx.memory.exploreTurns || 0;
+  const heading = Math.hypot(p.x - home.x, p.z - home.z) > HOME_RANGE
+    ? Math.atan2(home.z - p.z, home.x - p.x)
+    : angle + turns * 2.4; // golden-angle steps spread successive attempts around the compass
+  try {
+    await go(ctx, new GoalXZ(Math.floor(p.x + Math.cos(heading) * distance), Math.floor(p.z + Math.sin(heading) * distance)), ms);
+  } catch (error) {
+    ctx.memory.exploreTurns = turns + 1;
+    throw error;
+  }
 }
 
 // ── Digging and collecting ──────────────────────────────────────────────────
@@ -101,15 +133,30 @@ export async function chop(ctx, target) {
 // ── Placing ─────────────────────────────────────────────────────────────────
 
 function referenceFor(bot, pos, doorLike) {
-  for (const face of doorLike ? [FACES[0]] : FACES) {
+  // The block above is the last resort: clicking its underside would place stairs upside down.
+  for (const face of doorLike ? [FACES[0]] : [FACES[0], ...FACES.slice(2), FACES[1]]) {
     const ref = bot.blockAt(pos.plus(face));
     if (ref && !isSoft(ref.name) && !isInteractive(ref.name)) return { ref, face: face.scaled(-1) };
   }
   return null;
 }
 
+// Mineflayer yaw for each compass direction; stairs face the way the placer is looking.
+const YAW = { north: 0, west: Math.PI / 2, south: Math.PI, east: -Math.PI / 2 };
+
+/** Place the held block against a reference, facing a compass direction if one is given. */
+export async function placeFacing(ctx, reference, facing) {
+  const { bot } = ctx;
+  if (!facing) return bot.placeBlock(reference.ref, reference.face);
+  await bot.look(YAW[facing], 0, true);
+  await new Promise(resolve => setTimeout(resolve, 150)); // make sure the server has our new heading
+  // Do not turn towards the block: the server takes the stair direction from our heading.
+  // Clicking the lower half of a side face (or a top face) gives an upright stair.
+  return bot._placeBlockWithOptions(reference.ref, reference.face, { forceLook: 'ignore', half: 'bottom', swingArm: 'right' });
+}
+
 /** Place an item from a group (or an exact item name) into an empty position. */
-export async function placeAt(ctx, target, group) {
+export async function placeAt(ctx, target, group, facing = null) {
   const { bot } = ctx;
   const pos = toVec(target);
   const item = findItem(bot, group);
@@ -127,7 +174,7 @@ export async function placeAt(ctx, target, group) {
   const reference = referenceFor(bot, pos, doorLike);
   if (!reference) throw new Error(`Lost reference block at ${pos}`);
   await bot.equip(item, 'hand');
-  await bot.placeBlock(reference.ref, reference.face);
+  await placeFacing(ctx, reference, facing);
   check(ctx);
   return true;
 }
@@ -199,15 +246,21 @@ export async function craft(ctx, name, count = 1) {
   return times * per;
 }
 
-export async function ensurePlanks(ctx, wanted) {
+/**
+ * Make sure we hold `wanted` planks of ONE wood type (recipes such as chests and tables need
+ * matching planks). Uses `wood` if given, otherwise whichever type we have most of.
+ */
+export async function ensurePlanks(ctx, wanted, wood = null) {
   const { bot } = ctx;
-  let have = total(counts(bot), 'planks');
+  const type = wood || dominantWood(counts(bot)) || 'oak';
+  const plankName = `${type}_planks`;
+  let have = counts(bot)[plankName] || 0;
   while (have < wanted) {
-    const log = findItem(bot, 'log');
-    if (!log) throw new Error(`Need ${wanted - have} more planks and have no logs`);
+    const log = bot.inventory.items().find(item => isLog(item.name) && woodOf(item.name) === type);
+    if (!log) throw new Error(`Need ${wanted - have} more ${plankName} and have no ${type} logs`);
     const batches = Math.min(log.count, Math.ceil((wanted - have) / 4));
     await craft(ctx, planksFor(log.name), batches * 4);
-    have = total(counts(bot), 'planks');
+    have = counts(bot)[plankName] || 0;
   }
 }
 
@@ -227,19 +280,22 @@ export async function craftTool(ctx, name) {
   await craft(ctx, name, 1);
 }
 
-/** Craft a wooden component (door, stairs) matching the wood we hold. */
-export async function craftWooden(ctx, suffix, count) {
-  const wood = dominantWood(counts(ctx.bot)) || 'oak';
-  const name = `${wood}_${suffix}`;
+/** Craft an oak house component (oak_door, oak_fence, oak_stairs), preparing planks and sticks. */
+export async function craftComponent(ctx, item, count) {
+  const component = COMPONENTS.find(c => c.item === item);
+  if (!component) throw new Error(`Unknown component ${item}`);
+  const batches = Math.max(1, Math.ceil(count / component.makes));
   await ensureTable(ctx);
-  await ensurePlanks(ctx, 6);
-  return craft(ctx, ctx.bot.registry.itemsByName[name] ? name : `oak_${suffix}`, count);
+  if (item === 'oak_fence') await ensureSticks(ctx, 2 * batches);
+  await ensurePlanks(ctx, (item === 'oak_fence' ? 4 : 6) * batches, 'oak');
+  return craft(ctx, item, batches * component.makes);
 }
 
-export async function convertLogs(ctx, maxPlanks = Infinity) {
+/** Turn logs into planks (only logs of `wood` if given), up to maxPlanks. */
+export async function convertLogs(ctx, maxPlanks = Infinity, wood = null) {
   const { bot } = ctx;
   let made = 0;
-  for (const log of bot.inventory.items().filter(item => isLog(item.name))) {
+  for (const log of bot.inventory.items().filter(item => isLog(item.name) && (!wood || woodOf(item.name) === wood))) {
     if (made >= maxPlanks) break;
     const batches = Math.min(log.count, Math.ceil((maxPlanks - made) / 4));
     made += await craft(ctx, planksFor(log.name), batches * 4);
@@ -409,28 +465,48 @@ const waitFor = async (condition, ms) => {
 };
 const eyeOf = bot => bot.entity.position.offset(0, 1.62, 0);
 
-/** Stand just outside the house near `target`, pillar up with filler, place reachable roof cells, then remove the pillar. */
-export async function towerPlace(ctx, target, cells, height = 2) {
-  const { bot, state } = ctx;
-  const origin = buildOrigin(bot);
-  const goal = toVec(target);
-  // Open ground outside the footprint, closest to the target column.
-  const spots = [];
+export const MAX_PILLAR = 6;
+
+/**
+ * Find somewhere to stand and pillar up so `target` is within reach: open ground just outside the
+ * house or on its floor inside, whichever needs the shortest pillar.
+ */
+function pillarSpot(bot, origin, goal) {
+  const centre = goal.offset(0.5, 0.5, 0.5);
+  let best = null;
   for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) {
-    for (const y of [origin.y - 1, origin.y, origin.y + 1]) {
+    for (let y = origin.y - 1; y <= origin.y + 2; y++) {
       const p = new Vec3(goal.x + dx, y, goal.z + dz);
-      if (insideFootprint(HOUSE, origin, p)) continue;
       const below = bot.blockAt(p.offset(0, -1, 0));
-      const clear = [0, 1, 2, 3].every(h => bot.blockAt(p.offset(0, h, 0))?.name === 'air');
-      if (below && !isSoft(below.name) && clear) { spots.push(p); break; }
+      if (!below || isSoft(below.name) || isInteractive(below.name) || bot.blockAt(p)?.name !== 'air') continue;
+      for (let h = 0; h <= MAX_PILLAR; h++) {
+        // Room for the pillar plus our body above it, and not through the target itself.
+        const blocked = [h, h + 1].some(k => bot.blockAt(p.offset(0, k, 0))?.name !== 'air' || p.offset(0, k, 0).equals(goal));
+        if (blocked) break;
+        const eye = new Vec3(p.x + 0.5, p.y + h + 1.62, p.z + 0.5);
+        if (eye.distanceTo(centre) <= 4.3) {
+          const score = h * 3 + Math.hypot(dx, dz);
+          if (!best || score < best.score) best = { p, h, score };
+          break;
+        }
+      }
+      break; // only the lowest standable spot in this column
     }
   }
-  spots.sort((a, b) => Math.hypot(a.x - goal.x, a.z - goal.z) - Math.hypot(b.x - goal.x, b.z - goal.z));
-  if (!spots.length) throw new Error('No open ground beside the house for a pillar');
-  await go(ctx, new GoalBlock(spots[0].x, spots[0].y, spots[0].z), 20000);
+  return best;
+}
+
+/** Pillar up with filler, place every listed cell now within reach, then remove the pillar. */
+export async function towerPlace(ctx, target, cells) {
+  const { bot, state } = ctx;
+  const origin = buildOrigin(bot);
+  const spot = pillarSpot(bot, origin, toVec(target));
+  if (!spot) throw new Error(`Nowhere to pillar up to ${toVec(target)}`);
+  if (total(counts(bot), 'filler') < spot.h) throw new Error(`Need ${spot.h} dirt for a pillar`);
+  await go(ctx, new GoalBlock(spot.p.x, spot.p.y, spot.p.z), 25000);
 
   state.tower = state.tower || [];
-  for (let i = 0; i < height; i++) {
+  for (let i = 0; i < spot.h; i++) {
     const filler = findItem(bot, 'filler');
     if (!filler) break;
     await bot.equip(filler, 'hand');
@@ -446,15 +522,15 @@ export async function towerPlace(ctx, target, cells, height = 2) {
     check(ctx);
   }
 
-  // Place every listed roof cell now within reach that we have material for.
+  // Place every listed cell now within reach that we have material for, lowest first.
   let placed = 0;
-  for (const cell of cells) {
+  for (const cell of [...cells].sort((a, b) => a.y - b.y)) {
     const pos = toVec(cell);
     if (!isEmpty(bot.blockAt(pos)?.name ?? 'stone') || eyeOf(bot).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.5) continue;
     const item = findItem(bot, cell.material);
     const reference = referenceFor(bot, pos, false);
     if (!item || !reference) continue;
-    try { await bot.equip(item, 'hand'); await bot.placeBlock(reference.ref, reference.face); placed++; }
+    try { await bot.equip(item, 'hand'); await placeFacing(ctx, reference, cell.facing); placed++; }
     catch (error) { ctx.log(`Pillar placement at ${pos} failed: ${error.message}`); }
     check(ctx);
   }
@@ -489,11 +565,20 @@ export const actions = {
   chop: (ctx, a) => chop(ctx, a.target),
   // Builders leave cleared drops where they fall rather than walking into the footprint.
   clear: (ctx, a) => dig(ctx, a.target, { collect: false }),
-  place: (ctx, a) => placeAt(ctx, a.target, a.group),
+  place: (ctx, a) => placeAt(ctx, a.target, a.group, a.target.facing),
   tower_place: (ctx, a) => towerPlace(ctx, a.target, a.cells),
   dismantle: ctx => dismantleTower(ctx),
   craft_tool: (ctx, a) => craftTool(ctx, a.item),
-  craft_planks: (ctx, a) => convertLogs(ctx, a.count),
+  craft_planks: (ctx, a) => convertLogs(ctx, a.count, a.wood),
+  // Craft a house component; fetch inputs from storage first and return the results if asked.
+  make: async (ctx, a) => {
+    const held = counts(ctx.bot);
+    const wants = (a.inputs || []).filter(i => total(held, i.group) < i.count).map(i => ({ group: i.group, count: i.count - total(held, i.group) }));
+    if (wants.length) await withdraw(ctx, wants);
+    if (a.item === 'oak_planks') await convertLogs(ctx, a.count, 'oak');
+    else await craftComponent(ctx, a.item, a.count);
+    if (a.returnToStorage) await deposit(ctx, a.keep || (() => 0));
+  },
   inspect_storage: ctx => inspectStorage(ctx),
   withdraw: (ctx, a) => withdraw(ctx, a.wants),
   deposit: async (ctx, a) => {

@@ -2,7 +2,10 @@
 import { countItems } from '../items.js';
 import { HOUSE, survey, placeable, requirements, progress } from '../blueprint.js';
 import { merge, rawShortfall } from '../plan.js';
-import { storageChests, isDangerous, isProtected, knownLocations, markExhausted, nearest, toVec, buildOrigin, Vec3 } from '../world.js';
+import { storageChests, isDangerous, isProtected, knownLocations, markExhausted, nearest, toVec, buildOrigin, storageAnchor, Vec3 } from '../world.js';
+
+// Remembered resource locations further than this from home are ignored (matches skills.HOME_RANGE).
+const HOME_RANGE = 96;
 
 export const STORAGE_STALE_MS = 20_000;
 export const keyOf = p => `${Math.floor(p.x ?? p[0])},${Math.floor(p.y ?? p[1])},${Math.floor(p.z ?? p[2])}`;
@@ -64,7 +67,10 @@ export function rememberedTarget(ctx, kind, seeingAny) {
     const here = locations.filter(p => me.distanceTo(toVec(p)) < 8);
     if (here.length) { here.forEach(p => markExhausted(state, p)); save(); locations = knownLocations(state, kind); }
   }
-  return nearest(me, locations);
+  // Skip places we recently failed to reach, and anything too far from home to be worth the trip.
+  const failed = activeFailures(ctx.memory);
+  const home = storageAnchor(bot);
+  return nearest(me, locations.filter(p => !failed.has(keyOf(p)) && toVec(p).distanceTo(home) <= HOME_RANGE));
 }
 
 /** Publish a resource sighting once per 16-block region, so chat is not flooded with nearby duplicates. */
@@ -85,8 +91,9 @@ export function siteView(ctx, v) {
   const { bot } = ctx;
   const origin = buildOrigin(bot);
   const nameAt = (x, y, z) => bot.blockAt(new Vec3(x, y, z))?.name ?? null;
+  const propsAt = (x, y, z) => bot.blockAt(new Vec3(x, y, z))?.getProperties?.() ?? null;
   v.origin = origin;
-  v.report = survey(HOUSE, origin, nameAt);
+  v.report = survey(HOUSE, origin, nameAt, propsAt);
   v.siteLoaded = v.report.unknown.length === 0;
   v.placeable = v.siteLoaded ? placeable(v.report, origin, nameAt) : [];
   v.progress = progress(v.report);
@@ -99,7 +106,7 @@ export function siteView(ctx, v) {
   // unless it can see that nothing is needed at all.
   const nothingNeeded = v.siteLoaded && !Object.keys(v.siteNeed).length;
   v.shortfall = v.storage || nothingNeeded
-    ? rawShortfall(v.siteNeed, merge(v.storage?.contents, v.inv), { furnaceNear: v.furnaceNear })
+    ? rawShortfall(v.siteNeed, merge(v.storage?.contents, v.inv))
     : null;
   return v;
 }

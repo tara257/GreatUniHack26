@@ -24,7 +24,8 @@ export function perceive(ctx) {
     v.stone = findTargets(ctx, name => name === 'stone', { maxDistance: 24 })[0] || null;
     v.knownStone = v.stone ? null : rememberedTarget(ctx, 'Stone', false);
   } else {
-    v.tree = findTargets(ctx, isLog, { maxDistance: 32 }).find(p => Math.abs(p.y - ctx.bot.entity.position.y) < 5) || null;
+    // Oak only, so the trees it reports to the team are the ones the house is made from.
+    v.tree = findTargets(ctx, name => name === 'oak_log', { maxDistance: 32 }).find(p => Math.abs(p.y - ctx.bot.entity.position.y) < 5) || null;
     v.knownWood = v.tree ? null : rememberedTarget(ctx, 'Wood', false);
   }
   return v;

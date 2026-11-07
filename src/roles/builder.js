@@ -1,23 +1,22 @@
 // BUILDER: compares the house blueprint with the world and places whatever it can.
-import { total, GROUPS } from '../items.js';
+import { total } from '../items.js';
 import { requirements, cellKey } from '../blueprint.js';
 import { baseView, siteView, findTargets } from './common.js';
-import { free, outstanding, nextPlacement, fetchFromStorage, houseComplete } from './construction.js';
+import { free, outstanding, nextPlacement, fetchFromStorage, houseComplete, craftFromCarried, isHigh, BUILD_ITEMS } from './construction.js';
+import { MAX_PILLAR } from '../skills.js';
 
-export const TOWER_HEIGHT = 2;
-const ROOF_Y = 3; // relative height of the roof layer in the blueprint
+const ROOF_Y = 3; // cells from this height up get a pillar if walking to them failed
 
 export function perceive(ctx) {
   const v = siteView(ctx, baseView(ctx));
   v.tower = ctx.state.tower || [];
   // Dirt for a temporary pillar, dug from open ground away from the site and storage.
-  v.fillerTarget = total(v.inv, 'filler') >= TOWER_HEIGHT ? null
+  v.fillerTarget = total(v.inv, 'filler') >= MAX_PILLAR ? null
     : findTargets(ctx, name => name === 'dirt' || name === 'grass_block', { maxDistance: 16, exposed: true })[0] || null;
   return v;
 }
 
-const BUILD_GROUPS = ['cobblestone', 'planks', 'log', 'door', 'glass_pane', 'stairs'];
-export const builderKeep = name => (BUILD_GROUPS.some(group => GROUPS[group](name)) || name === 'dirt' ? 999 : 0);
+export const builderKeep = name => (BUILD_ITEMS.includes(name) || name === 'dirt' ? 999 : 0);
 
 export function decide(v) {
   const action = choose(v);
@@ -35,12 +34,12 @@ function choose(v) {
   // 0. Remove any temporary pillar left behind by an interrupted roof job.
   if (v.tower.length) return { type: 'dismantle', say: 'Removing my temporary pillar' };
   if (!v.siteLoaded || v.distanceToSite > 48) {
-    return { type: 'travel', target: v.origin.offset(2, 0, -3), range: 3, say: 'Walking to the building site' };
+    return { type: 'travel', target: v.origin.offset(4, 0, -3), range: 3, say: 'Walking to the building site' };
   }
   const { report } = v;
   if (v.full && Object.keys(v.inv).some(name => !builderKeep(name))) return { type: 'deposit', keep: builderKeep, say: 'Inventory full; storing everything not needed for the house' };
 
-  // 1. Clear anything occupying a blueprint position (grass, dirt, misplaced blocks).
+  // 1. Clear anything occupying a blueprint position (grass, dirt, misplaced or wrongly facing blocks).
   const obstruction = report.obstructed.find(free(v));
   if (obstruction) return { type: 'clear', target: obstruction, say: `Clearing ${obstruction.found} from the house site` };
 
@@ -49,25 +48,30 @@ function choose(v) {
   // 2. Place the first buildable cell we hold material for. Missing one material
   //    simply moves us on to another part of the house.
   const cell = nextPlacement(v);
-  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Placing ${cell.material}` };
+  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Placing ${cell.material.replace('oak_', 'oak ')}` };
 
-  // 3. Roof cells that could not be reached by walking: pillar up beside the wall and place from there.
-  const roof = v.placeable.filter(c => c.y >= v.origin.y + ROOF_Y && v.failed.has(cellKey(c)) && total(v.inv, c.material) > 0);
+  // 3. Roof cells too high to reach, or that could not be reached by walking: pillar up and place from there.
+  const roof = v.placeable.filter(c => total(v.inv, c.material) > 0 &&
+    (isHigh(v, c) || (c.y >= v.origin.y + ROOF_Y && v.failed.has(cellKey(c)))));
   if (roof.length) {
-    if (total(v.inv, 'filler') >= TOWER_HEIGHT) return { type: 'tower_place', target: roof[0], cells: roof, say: 'Roof out of reach; building a temporary pillar' };
+    if (total(v.inv, 'filler') >= MAX_PILLAR) return { type: 'tower_place', target: roof[0], cells: roof, say: 'Roof out of reach; building a temporary pillar' };
     if (v.fillerTarget) return { type: 'mine', target: v.fillerTarget, say: 'Digging dirt for a temporary pillar' };
   }
 
-  // 4. Turn our own logs into planks if planks are the bottleneck and we have logs to spare.
+  // 4. Make what is missing from what we carry: oak planks from spare oak logs, then stairs/fences/door.
   const need = outstanding(v);
-  const logsNeeded = requirements(report.missing).log || 0;
-  if (need.planks && total(v.inv, 'log') > logsNeeded) return { type: 'craft_planks', count: need.planks, say: 'Turning spare logs into planks' };
+  const logsNeeded = requirements(report.missing).oak_log || 0;
+  if (need.oak_planks && total(v.inv, 'oak_log') > logsNeeded) {
+    return { type: 'craft_planks', count: need.oak_planks, wood: 'oak', say: 'Turning spare oak logs into planks' };
+  }
+  const craft = craftFromCarried(v);
+  if (craft) return craft;
 
   // 5. Fetch outstanding materials from storage when it might have them.
   const fetch = fetchFromStorage(v);
   if (fetch) return fetch;
 
-  const list = Object.entries(need).filter(([g]) => g !== 'filler').map(([g, n]) => `${n} ${g}`).join(', ');
+  const list = Object.entries(need).filter(([g]) => g !== 'filler').map(([g, n]) => `${n} ${g.replace('oak_', '')}`).join(', ');
   return { type: 'wait', ms: 4000, say: list ? `Waiting for materials: ${list}` : 'Waiting for a reachable position to build' };
 }
 

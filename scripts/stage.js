@@ -4,6 +4,8 @@
 //        npm run stage -- 120 70 -40           (use these coordinates as the new spawn instead)
 //        npm run stage -- biome cherry_grove   (find that biome anywhere and search there;
 //                                               several names = try each in order)
+//        npm run stage -- near flower_forest   (same, but the house may stand just outside
+//                                               the biome, e.g. on flat plains at a forest edge)
 import mineflayer from 'mineflayer';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +13,21 @@ import vec3Module from 'vec3';
 import { sendCommands } from './cmd.js';
 import { ROSTER } from '../src/roster.js';
 import { isSoft } from '../src/items.js';
+import { HOUSE } from '../src/blueprint.js';
+import { BUILD_OFFSET } from '../src/world.js';
 
 const { Vec3 } = vec3Module;
 const PLAYER = process.env.PLAYER_NAME || 'b_caul';
 const SEARCH_RADIUS = 56;
-// Ground that must be level and open: the house footprint with a one-block margin (x 5..11, z -3..4)
-// and a small patch at spawn for the storage chest and crafting table.
-const AREAS = [{ minX: 5, maxX: 11, minZ: -3, maxZ: 4 }, { minX: -1, maxX: 1, minZ: -1, maxZ: 1 }];
+// Oak canopy samples (every 2 blocks within 32) needed near the site; about one oak tree is 4-8.
+const MIN_OAK = Number(process.env.MIN_OAK || 6);
+// Ground that must be level and open: the house footprint with a one-block margin (plus the front
+// step) and a small patch at spawn for the storage chest and crafting table.
+const F = HOUSE.footprint;
+const AREAS = [
+  { minX: BUILD_OFFSET.x + F.minX - 1, maxX: BUILD_OFFSET.x + F.maxX + 1, minZ: BUILD_OFFSET.z + F.minZ - 2, maxZ: BUILD_OFFSET.z + F.maxZ + 1 },
+  { minX: -1, maxX: 1, minZ: -1, maxZ: 1 },
+];
 
 // Outfits: dyed leather pieces (or a vanilla helmet) so each role reads at a glance.
 const OUTFITS = {
@@ -90,10 +100,10 @@ function surfaceOf(bot, x, z, top, depth = 80) {
     const block = bot.blockAt(new Vec3(x, y, z));
     if (!block) return null;
     if (block.name === 'air' || block.name === 'cave_air') continue;
-    if (/leaves/.test(block.name)) return { y, kind: 'tree' };
+    if (/leaves/.test(block.name)) return { y, kind: 'tree', oak: block.name === 'oak_leaves' };
     if (/water|lava|ice/.test(block.name)) return { y, kind: 'liquid' };
     if (isSoft(block.name)) continue;
-    if (/_log$/.test(block.name)) return { y, kind: 'tree' };
+    if (/_log$/.test(block.name)) return { y, kind: 'tree', oak: block.name === 'oak_log' };
     return { y, kind: 'ground' };
   }
   return null;
@@ -129,12 +139,18 @@ function findFlatSite(bot, { biome = null, deep = false } = {}) {
     const here = b?.name || bot.registry.biomes?.[b?.id]?.name;
     biomes.add(here);
     if (biome && here !== biome) { why.otherBiome++; continue; }
-    // Trees within reach keep the lumberjack busy; count canopy columns in a 24-block ring.
-    let trees = 0;
-    for (let x = -24; x <= 24; x += 2) for (let z = -24; z <= 24; z += 2) if (at(ax + x, az + z)?.kind === 'tree') trees++;
-    if (trees < 6) { why.fewTrees++; continue; }
-    const score = (max - min) * 10 + Math.hypot(dx, dz) / 10 - Math.min(trees, 40) / 8;
-    if (!best || score < best.score) best = { x: ax, y: max + 1, z: az, score, flatness: max - min, trees };
+    // Oak trees within reach keep the lumberjack busy (the house is all oak); water slows everyone down.
+    let trees = 0, water = 0, sampled = 0;
+    for (let x = -32; x <= 32; x += 2) for (let z = -32; z <= 32; z += 2) {
+      const s = at(ax + x, az + z);
+      sampled++;
+      if (s?.kind === 'tree' && s.oak) trees++;
+      if (s?.kind === 'liquid') water++;
+    }
+    if (trees < MIN_OAK) { why.fewTrees++; why.mostOak = Math.max(why.mostOak || 0, trees); continue; }
+    if (water > sampled * 0.08) { why.water = (why.water || 0) + 1; continue; }
+    const score = (max - min) * 10 + Math.hypot(dx, dz) / 10 - Math.min(trees, 60) / 8 + water;
+    if (!best || score < best.score) best = { x: ax, y: max + 1, z: az, score, flatness: max - min, trees, water };
   }
   if (!best) throw new Error(`No flat open area with nearby trees found around ${centre.x}, ${centre.z}. Rejected spots: ${JSON.stringify(why)}; biomes on flat ground: ${[...biomes].join(', ') || 'none'}`);
   return best;
@@ -143,12 +159,13 @@ function findFlatSite(bot, { biome = null, deep = false } = {}) {
 const args = process.argv.slice(2);
 const coords = args.map(Number);
 let site;
-if (args[0] === 'biome') {
+if (args[0] === 'biome' || args[0] === 'near') {
+  const strict = args[0] === 'biome';
   for (const biome of args.slice(1)) {
     const centre = await locateBiome(biome);
     if (!centre) { console.log(`No ${biome} found.`); continue; }
     console.log(`Nearest ${biome} is around ${centre.x}, ${centre.z}; surveying it...`);
-    try { site = { ...(await surveyorFindsSite({ centre, biome })), biome }; break; }
+    try { site = { ...(await surveyorFindsSite({ centre, biome: strict ? biome : null })), biome: strict ? biome : `${biome} area` }; break; }
     catch (error) { console.log(`  ${error.message}`); }
   }
   if (!site) { console.error('None of those biomes had a usable flat site.'); process.exit(1); }
@@ -157,7 +174,7 @@ if (args[0] === 'biome') {
 } else {
   site = await surveyorFindsSite();
 }
-console.log(`New spawn: ${site.x} ${site.y} ${site.z}${site.biome ? ` in ${site.biome}` : ''}${site.trees ? ` (height variation ${site.flatness}, ${site.trees} tree columns nearby)` : ''}`);
+console.log(`New spawn: ${site.x} ${site.y} ${site.z}${site.biome ? ` in ${site.biome}` : ''}${site.trees ? ` (height variation ${site.flatness}, ${site.trees} oak columns and ${site.water} water columns nearby)` : ''}`);
 
 const { x, y, z } = site;
 sendCommands([
@@ -170,6 +187,6 @@ sendCommands([
   ...ROSTER.map(({ name }, i) => `tp ${name} ${x + 1 + i} ${y} ${z - 2}`),
   `tp ${PLAYER} ${x - 2} ${y + 3} ${z - 6}`,
   ...outfitCommands(),
-  `say Demo staged: new spawn at ${x} ${y} ${z}. Storage goes here; the house goes 6 blocks east.`,
+  `say Demo staged: new spawn at ${x} ${y} ${z}. Storage goes here; the house goes just east of it.`,
 ]);
 console.log('Sent spawn, rules, teleports and outfits to the server. Bots that are offline will need `npm run stage -- ' + `${x} ${y} ${z}` + '` again once they join.');

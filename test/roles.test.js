@@ -4,7 +4,7 @@ import * as miner from '../src/roles/miner.js';
 import * as lumberjack from '../src/roles/lumberjack.js';
 import * as builder from '../src/roles/builder.js';
 import { HOUSE, survey, placeable, requirements, cellKey } from '../src/blueprint.js';
-import { helpBuild } from '../src/roles/construction.js';
+import { helpBuild, craftFromCarried } from '../src/roles/construction.js';
 import { Vec3 } from '../src/world.js';
 
 const P = (x, y, z) => new Vec3(x, y, z);
@@ -67,14 +67,14 @@ test('builder places held materials and moves to other tasks when one material i
   // Holding only a door, and the floor is not yet buildable for it: fetch the rest from storage.
   const fetch = builder.decide(builderView(flat, { inv: {} }));
   assert.equal(fetch.type, 'withdraw');
-  assert.ok(fetch.wants.some(w => w.group === 'cobblestone' && w.count === 25));
+  assert.ok(fetch.wants.some(w => w.group === 'cobblestone' && w.count === 64));
   // Storage was just checked and has only planks: ask only for planks.
   const planksOnly = builder.decide(builderView(flat, { storage: { contents: { oak_planks: 20 }, age: 0 } }));
-  assert.deepEqual(planksOnly.wants.map(w => w.group), ['planks']);
+  assert.deepEqual(planksOnly.wants.map(w => w.group), ['oak_planks']);
   // Storage recently seen empty: wait and say what is needed.
   const wait = builder.decide(builderView(flat, { storage: { contents: {}, age: 0 } }));
   assert.equal(wait.type, 'wait');
-  assert.match(wait.say, /25 cobblestone/);
+  assert.match(wait.say, /128 cobblestone/);
 });
 
 test('builder skips cells that recently failed and finishes when the house is complete', () => {
@@ -96,25 +96,40 @@ test('builder walks to the site when it is not loaded', () => {
   assert.equal(builder.decide(builderView(flat, { siteLoaded: false })).type, 'travel');
 });
 
-// A finished house except for the roof: everything below y=67 placed.
-const roofless = (x, y, z) => {
+// The house built up to (and including) relative layer `top`; everything above is still missing.
+const builtTo = top => (x, y, z) => {
   if (y < 64) return 'grass_block';
   const cell = HOUSE.cells.find(c => c.x === x - 100 && c.y === y - 64 && c.z === z - 200);
-  if (!cell || cell.y >= 3 || cell.material === 'air') return 'air';
-  return { cobblestone: 'cobblestone', planks: 'oak_planks', log: 'oak_log', door: 'oak_door', door_upper: 'oak_door', glass_pane: 'glass_pane', stairs: 'oak_stairs' }[cell.material];
+  if (!cell || cell.y > top || cell.material === 'air') return 'air';
+  return cell.material === 'door_upper' ? 'oak_door' : cell.material;
 };
 
 test('builder pillars up for roof cells it failed to reach, digging dirt first if it has none', () => {
-  const view = builderView(roofless, { inv: { oak_planks: 25 } });
+  const view = builderView(builtTo(3), { inv: { oak_stairs: 30 }, storageExists: false });
   assert.equal(builder.decide(view).type, 'place');
   view.failed = new Set(view.placeable.map(cellKey));
   assert.equal(builder.decide(view).type, 'wait'); // no dirt and none in sight
   view.fillerTarget = P(90, 63, 200);
   assert.equal(builder.decide(view).type, 'mine');
-  view.inv.dirt = 2;
+  view.inv.dirt = 6;
   const tower = builder.decide(view);
   assert.equal(tower.type, 'tower_place');
-  assert.ok(tower.cells.every(c => c.y === 67));
+  assert.ok(tower.cells.every(c => c.y === 68 && c.material === 'oak_stairs'));
+});
+
+test('cells near the ridge go straight to a pillar without trying to walk there first', () => {
+  const kit = { oak_stairs: 30, oak_planks: 20, dirt: 6 };
+  // Layer 6 (rel) is reachable standing on the floor; layer 7 and the ridge are not tried by walking.
+  assert.equal(builder.decide(builderView(builtTo(5), { inv: kit, storageExists: false })).type, 'place');
+  const tower = builder.decide(builderView(builtTo(6), { inv: kit, storageExists: false }));
+  assert.equal(tower.type, 'tower_place');
+  assert.ok(tower.cells.every(c => c.y >= 71));
+});
+
+test('a builder holding planks crafts the stairs the roof still needs', () => {
+  const view = builderView(builtTo(3), { inv: { oak_planks: 12 } });
+  const make = craftFromCarried({ ...view, report: { ...view.report, missing: view.report.missing.filter(c => c.material === 'oak_stairs') } });
+  assert.deepEqual([make.type, make.item, make.count], ['make', 'oak_stairs', 8]);
 });
 
 test('builder removes a leftover pillar before anything else', () => {
@@ -128,10 +143,12 @@ test('miner and lumberjack stop gathering once the team has enough, and help bui
   assert.deepEqual([helping.type, helping.group], ['place', 'cobblestone']);
 
   const jack = builderView(flat, { tree: P(1, 64, 1) });
+  // Only oak is collected: birch carried does not count towards a delivery.
+  assert.equal(lumberjack.decide(base({ inv: { birch_log: 20 } })).type, 'explore');
   assert.equal(lumberjack.decide({ ...jack, shortfall: { cobblestone: 0, wood: 3 } }).type, 'chop');
   assert.notEqual(lumberjack.decide({ ...jack, shortfall: { cobblestone: 0, wood: 0 } }).type, 'chop');
   // Holding spare logs while the house still needs planks: convert them first.
-  const convert = lumberjack.decide({ ...jack, inv: { oak_log: 12 }, siteNeed: { planks: 45, log: 8 }, shortfall: { cobblestone: 0, wood: 0 } });
+  const convert = lumberjack.decide({ ...jack, inv: { oak_log: 12 }, siteNeed: { oak_planks: 45, oak_log: 8 }, shortfall: { cobblestone: 0, wood: 0 } });
   assert.deepEqual([convert.type, convert.count], ['craft_planks', 16]);
 });
 

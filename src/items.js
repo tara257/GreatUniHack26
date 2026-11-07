@@ -40,8 +40,8 @@ export function countItems(items) {
 }
 
 export function total(counts, group) {
-  const test = typeof group === 'function' ? group : GROUPS[group];
-  if (!test) throw new Error(`Unknown item group ${group}`);
+  // A group name, a predicate, or else an exact item name such as 'oak_stairs'.
+  const test = typeof group === 'function' ? group : GROUPS[group] || (name => name === group);
   let sum = 0;
   for (const [name, count] of Object.entries(counts || {})) if (test(name)) sum += count;
   return sum;

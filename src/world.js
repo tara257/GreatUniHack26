@@ -21,8 +21,9 @@ export function storageAnchor(bot) {
 }
 
 /** The house is built a few blocks east of storage, at spawn height. */
+export const BUILD_OFFSET = { x: 6, z: -2 };
 export function buildOrigin(bot) {
-  return originOverride || storageAnchor(bot).offset(6, 0, -2);
+  return originOverride || storageAnchor(bot).offset(BUILD_OFFSET.x, 0, BUILD_OFFSET.z);
 }
 
 export const STORAGE_RADIUS = 4;
