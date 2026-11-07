@@ -2,7 +2,7 @@
 
 This is an optional communication service for independent Minecraft agents. It relays observations, requests, and completion reports. It does not choose actions, assign tasks, transfer Minecraft items, elect a leader, resolve conflicting beliefs, or operate Minecraft connections.
 
-The initial implementation includes a Node.js/`ws` relay, a Node.js agent adapter, independent simulated agents, automated tests, and operator endpoints for a future React dashboard. The existing Minecraft bots still use their original chat transport; this service has not been wired into their gameplay code. There is no dashboard UI in this change.
+The implementation includes a Node.js/`ws` relay, a Node.js agent adapter, independent simulated agents, automated tests, and operator endpoints for a future React dashboard. The five Minecraft role bots now use `MinecraftChannel` by default to publish observations and learn discoveries through this relay. The old chat transport requires explicit `COMMS_TRANSPORT=chat`; WebSocket failure never triggers a chat fallback. There is no dashboard UI yet.
 
 ## Run and test
 
@@ -26,7 +26,7 @@ npm run comms:agent -- Flint
 npm run comms:agent -- Moss
 ```
 
-Defaults: `COMMS_HOST=127.0.0.1`, `COMMS_PORT=8090`, agent `COMMS_URL=ws://127.0.0.1:8090/agents`. The relay prints a generated operator token, which changes on restart. `COMMS_OPERATOR_TOKEN` can instead be supplied **only to the server process**. Never pass it to gameplay agents. `COMMS_AGENT_TOKEN` is an optional, separate shared admission credential for Node agents. A non-loopback bind requires explicit agent and operator credentials. Remote deployments additionally need TLS (`wss`/HTTPS), typically through a reverse proxy.
+Defaults: `COMMS_HOST=127.0.0.1`, `COMMS_PORT=8090`, agent `COMMS_URL=ws://127.0.0.1:8090/agents`. The relay prints a generated operator token, which changes on restart. A loopback server also saves it to the ignored `.state/comms-operator-PORT.token` file with owner-only permissions; the operator CLI uses it automatically for that local port. `COMMS_OPERATOR_TOKEN` can instead be supplied **only to the server/operator process**. Never pass it to gameplay agents. The team launcher removes it from agent environments and does not reload `.env` in child processes. `COMMS_AGENT_TOKEN` is an optional, separate shared admission credential for Node agents. A non-loopback bind requires explicit agent and operator credentials. Remote deployments additionally need TLS (`wss`/HTTPS), typically through a reverse proxy.
 
 Agent IDs are unique among live connections. The shared agent credential admits trusted project agents; it is not a separate cryptographic identity credential for each ID. A duplicate live ID is rejected; a disconnected ID can reconnect and reclaim its pending queue. Registry state is retained until the relay restarts.
 
@@ -215,7 +215,11 @@ A future React client should use the browser's native `WebSocket` API, not the N
 
 ## Minecraft developer integration
 
-Use the included adapter from `src/comms/agent-client.js`. `start()` returns immediately; `publish()` returns a message ID immediately. Neither should be awaited by the gameplay loop.
+The repository's real bots already use `src/comms/minecraft-channel.js`. Start the Minecraft server, `npm run comms:server`, and `npm run bots`, then send `!team start` in Minecraft. The bridge periodically broadcasts real status and inventory, plus up to 32 fresh own discoveries in `RESOURCE_UPDATE.payload.discoveries`. It validates team membership and discoveries before feeding the existing role memory. Peer reports and version watermarks are saved with that memory before ACK; each agent increments/saves its own epoch before connecting. Health, tasks, and inventories are observations, not instructions. Minecraft connection loss is reported separately; relay loss does not touch the Minecraft socket or role loop.
+
+Human narration remains in Minecraft chat, but incoming machine-readable chat observations are ignored in WebSocket mode. Use authenticated operator controls for selective isolation/partitions. The local `!team comms off` command closes only the relay adapter; `comms on` reconnects it. Local communication-off state also persists across restarts.
+
+For a different Minecraft client, use the adapter from `src/comms/agent-client.js` as below. `start()` returns immediately; `publish()` returns a message ID immediately. Neither should be awaited by the gameplay loop. The raw adapter's own state is in memory; the existing `MinecraftChannel` provides the per-agent persistence described above.
 
 ```js
 import { AgentClient } from './comms/agent-client.js';

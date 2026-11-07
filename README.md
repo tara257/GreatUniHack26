@@ -16,7 +16,7 @@ All five agents start by default; set `TEAM_ROLES` (see `.env.example`) to run a
 
 ## Communication infrastructure
 
-The standalone Node.js WebSocket relay is ready for simulated-agent testing. It supports unique agent IDs, the six standard message types, direct/broadcast delivery, selected-agent isolation, group partitions, link failures, bounded queues, acknowledgements, expiry, and reconnection. It keeps relay connectivity separate from reported Minecraft presence. Agent decisions remain local.
+The Node.js WebSocket relay supports both the five real role bots and independent simulated agents. It supports unique agent IDs, the six standard message types, direct/broadcast delivery, selected-agent isolation, group partitions, link failures, bounded queues, acknowledgements, expiry, and reconnection. It keeps relay connectivity separate from reported Minecraft presence. Agent decisions remain local.
 
 ```sh
 npm run comms:demo       # Five independent simulated processes, three partitions, then heal
@@ -25,14 +25,13 @@ npm run comms:agent -- Ember  # Run each simulated agent in a separate terminal
 npm run test:comms
 ```
 
-See the **[message protocol and Minecraft integration guide](docs/communication-protocol.md)** for schemas, operator controls, delivery guarantees, and future dashboard endpoints. Queues are in memory; relay-process restart recovery requires agents to re-advertise their own facts. This initial implementation has no dashboard UI and does not replace the role agents' existing Minecraft chat transport.
+See the **[message protocol and Minecraft integration guide](docs/communication-protocol.md)** for schemas, operator controls, delivery guarantees, and future dashboard endpoints. The role bots use WebSockets by default. Their human-readable narration remains in Minecraft chat, but they do not learn structured peer data from chat in this mode. Queues are in memory; adapters re-advertise their own facts after reconnection. There is no dashboard UI yet.
 
 The extended failure simulator tracks which links can actually exchange messages, supports layered isolation/partitions and a manual `heal`, and logs failures, restoration, send attempts, and acknowledgements. State messages carry source-owned versions; both the relay and client prevent older versions from overwriting newer observations. Clients re-advertise their own latest published state after reconnects, topology changes, or a new peer joining. No server assigns agent actions.
 
 For manual testing, start the relay and simulated agents, then use a separate **operator terminal**:
 
 ```sh
-export COMMS_OPERATOR_TOKEN='paste-the-token-printed-by-the-relay'
 npm run comms:control -- status
 npm run comms:control -- isolate Wren_Scout
 npm run comms:control -- restore Wren_Scout
@@ -40,7 +39,7 @@ npm run comms:control -- partition Flint_Miner,Moss_Lumberjack Ember_Builder,Sag
 npm run comms:control -- heal
 ```
 
-All named agents must have registered first. Start them with `npm run comms:agent -- NAME` in separate terminals. These controls affect simulated WebSocket links, not Minecraft connections. The relay prints timestamped JSON events; the status command shows readable agent/link tables. Restart an already running relay to load code changes; a restart clears its in-memory queues and fault settings.
+All named agents must have registered first. Start real Minecraft agents with `npm run bots`, or simulated ones with `npm run comms:agent -- NAME` in separate terminals. These controls affect peer links without closing Minecraft connections. The local server saves its operator credential in the ignored `.state/comms-operator-8090.token` file (owner access only); the CLI reads it automatically. For a remote relay, supply `COMMS_HTTP_URL` and `COMMS_OPERATOR_TOKEN` only in the operator terminal. The relay prints timestamped JSON events; the status command shows readable agent/link tables. Restart an already running relay to load code changes; a restart clears its in-memory queues and fault settings.
 
 ## Updating a teammate's checkout
 
@@ -51,15 +50,18 @@ git pull --ff-only
 npm ci
 ```
 
-`npm ci` installs the versions in the lockfile. `npm run bots` then starts the five role bots by default. Stop an old bot process before starting the replacement team; pulling files does not update an already running process. The WebSocket simulation remains separate from those bots until integration.
+`npm ci` installs the versions in the lockfile. Start the relay with `npm run comms:server`, then `npm run bots` starts the five role bots using it. Stop an old bot process before starting the replacement team; pulling files does not update an already running process. Gameplay continues if the relay is unavailable; peer communication resumes when it returns.
 
 ## Start on this Mac
 
 1. In Minecraft Launcher, choose **Java Edition → Installations → New installation → release 1.21.1**. Launch that installation. You need access to Minecraft Java Edition on your Microsoft account.
 2. Double-click **Start Server.command**. On the first run, review the linked Minecraft EULA and type `yes` only if you accept. Wait for the server's `Done` message.
 3. In Minecraft, choose **Multiplayer → Direct Connection**, enter **localhost:25565**, and join.
-4. Double-click **Start Bots.command**. Watch the five agents join and introduce themselves.
-5. Open Minecraft chat with **T** and send `!team start`.
+4. In another terminal in the project folder, run **`npm run comms:server`**. Leave it running. If one is already running, reuse it; restart it once after updating its code.
+5. Double-click **Start Bots.command**. Watch the five agents join and introduce themselves.
+6. Open Minecraft chat with **T** and send `!team start`.
+
+To demonstrate a failure while watching Minecraft, run `npm run comms:control -- isolate Moss_Lumberjack` in another terminal. Moss continues its own role, but it cannot exchange new peer information. Run `npm run comms:control -- restore Moss_Lumberjack` to restore that link. `npm run comms:control -- status` shows which links can communicate. If a partition or pairwise fault also applies, use `heal` to clear all fault layers.
 
 To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **server terminal** (without a slash). Return with `gamemode survival YOUR_USERNAME`. To shut down, type `quit` in the bots terminal, then `stop` in the server terminal.
 
@@ -72,12 +74,14 @@ To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **s
 | `!team status` | Each agent reports role, task, inventory, deaths, and communication state. |
 | `!team pause` | Stop work and movement. |
 | `!team come` | Pause gathering and approach you, if you are nearby. |
-| `!team comms off` | Block outgoing and incoming machine-readable team discoveries. |
-| `!team comms on` | Resume communication and request/replay missed observations. |
+| `!team comms off` | Close each bot's relay adapter locally, leaving Minecraft and its role loop running. |
+| `!team comms on` | Reconnect the relay adapters and exchange current observations. |
 
 The bots terminal also accepts `start`, `pause`, `status`, `comms off`, and `comms on`. These are operator controls, not shared gameplay decisions. Human operator commands remain available during a simulated outage.
 
-Bots use readable messages such as `[TEAM 0123abcd] Wood at 12 65 -30`. Narration remains visible to spectators during the outage; agents only learn from `[TEAM ...]` messages, which are blocked before parsing. This simulates failure of the team message channel, **not** disconnection from the Minecraft world. Agents can still observe their own surroundings.
+Bots publish real health, hunger, position, task, inventory, and their own discoveries over WebSockets. Received discoveries feed the existing local role memory; reported inventories do not magically reveal shared chest contents or assign work. Administrator isolation leaves both Minecraft and relay sockets connected while preventing peer delivery. The local `!team comms off` command instead closes the relay socket, so its status correctly differs from a policy-blocked link. In both cases, agents can still observe their own surroundings and perform local work.
+
+Set `COMMS_TRANSPORT=chat` explicitly to use the old `[TEAM ...]` chat transport. There is no automatic fallback to chat when WebSocket communication fails; that would bypass a partition. Use WebSocket mode for relay failure demonstrations. Each real agent atomically saves its incremented source epoch and received version watermarks in its own state file, protecting state ordering across process restarts.
 
 ## Demo helpers
 

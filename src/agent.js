@@ -1,11 +1,12 @@
 // One autonomous agent process. It connects to the server, keeps its own memory, and repeatedly:
 //   perceive (local observations) -> decide (deterministic role rules) -> act (skills).
-// No other process tells it what to do; teammates only share facts through Minecraft chat.
+// No other process tells it what to do; teammates share facts through the selected transport.
 import mineflayer from 'mineflayer';
 import pathfinderModule from 'mineflayer-pathfinder';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { TeamChannel } from './channel.js';
+import { MinecraftChannel } from './comms/minecraft-channel.js';
 import { ROSTER, TEAM_NAMES } from './roster.js';
 import { run, Cancelled } from './skills.js';
 import { isProtected } from './world.js';
@@ -16,6 +17,8 @@ const name = process.argv[2];
 const member = ROSTER.find(m => m.name === name);
 if (!member) throw new Error('Start the team with npm run bots.');
 const roleName = member.role;
+const transport=process.env.COMMS_TRANSPORT || 'websocket';
+if(!['websocket','chat'].includes(transport))throw new Error('COMMS_TRANSPORT must be websocket or chat');
 const role = await import(`./roles/${roleName}.js`);
 const index = ROSTER.indexOf(member);
 // Each agent prefers a different compass direction, which spreads the team out without coordination.
@@ -33,8 +36,9 @@ const save = () => {
 
 // Runtime-only memory: recent failures and the last look inside storage.
 const memory = { failed: new Map(), storage: null, window: null };
-let bot, channel, spawned = false, stopping = false, activeTask = null, generation = 0;
+let bot, channel, spawned = false, minecraftConnected = false, stopping = false, activeTask = null, generation = 0;
 let currentTask = 'Waiting for the world', reconnectTimer, taskTimer, chatTimer, lastSignature = '';
+let decisions=0,completedActions=0,commsTimer;
 const log = text => console.log(`[${name}/${roleName}] ${text}`);
 const chatQueue = [];
 
@@ -56,6 +60,19 @@ function inventorySummary() {
   return top.length ? top.map(([n, c]) => `${c} ${n}`).join(', ') : 'nothing';
 }
 
+function observeForPeers() {
+  const resources={};
+  for(const item of bot?.inventory?.items() || [])resources[item.name]=(resources[item.name] || 0)+item.count;
+  const position=bot?.entity?.position;
+  return {resources,status:{minecraft:{connected:minecraftConnected && !stopping},
+    task:currentTask.slice(0,256),role:roleName,
+    ...(Number.isFinite(bot?.health)?{health:Math.max(0,Math.min(20,bot.health))}:{}),
+    ...(Number.isFinite(bot?.food)?{hunger:Math.max(0,Math.min(20,bot.food))}:{}),
+    ...(position && [position.x,position.y,position.z].every(Number.isFinite)?{position:{x:position.x,y:position.y,z:position.z}}:{}),
+    details:{running:state.running,decisions,completedActions,deaths:state.deaths,learned:state.knowledge.length,
+      transport,simulated:false}}};
+}
+
 function halt() {
   generation++;
   bot.pathfinder.setGoal(null); bot.stopDigging(); bot.clearControlStates();
@@ -66,7 +83,7 @@ function halt() {
 function control(command, player) {
   if (!spawned) return log('Waiting to join the local server.');
   if (command === 'help') return say('Commands: !team start | pause | status | comms off | comms on | come');
-  if (command === 'status') return say(`${roleName}: ${currentTask}. Carrying ${inventorySummary()}. Deaths ${state.deaths}, comms ${channel.online ? 'on' : 'OFF'}, learned ${state.knowledge.length}.`);
+  if (command === 'status') return say(`${roleName}: ${currentTask}. Carrying ${inventorySummary()}. Deaths ${state.deaths}, comms ${channel.summary ?? (channel.online ? 'on' : 'OFF')}, learned ${state.knowledge.length}.`);
   if (command === 'start') { state.running = true; save(); lastSignature = ''; return say(`Starting work as the ${roleName}.`); }
   if (command === 'pause') { state.running = false; halt(); save(); return narrate('Paused'); }
   if (command === 'comms off' || command === 'comms on') {
@@ -88,10 +105,8 @@ function connect() {
   bot = mineflayer.createBot({ host: '127.0.0.1', port: Number(process.env.MC_PORT || 25565),
     username: name, version: process.env.MC_VERSION || '1.21.1', auth: 'offline' });
   bot.loadPlugin(pathfinder);
-  channel = new TeamChannel({ state, save, send: text => { if (spawned) { bot.chat(text); log(text); } },
-    learn: event => log(`Learned ${event.kind.toLowerCase()} location from ${event.sender}: ${event.position.join(', ')}`) });
   bot.on('spawn', () => {
-    spawned = true;
+    spawned = true;minecraftConnected=true;
     const movements = new Movements(bot);
     movements.allow1by1towers = false;
     movements.allowParkour = false;
@@ -106,7 +121,8 @@ function connect() {
     bot.pathfinder.thinkTimeout = 3000;
     say(`Hello! I am ${name}, the team ${roleName}. Type !team start to begin, or !team help.`);
     // Request facts we may have missed while disconnected from the game server.
-    if (channel.online) chatQueue.push('[TEAM SYNC] Please resend your discoveries.');
+    if (transport==='chat' && channel.online) chatQueue.push('[TEAM SYNC] Please resend your discoveries.');
+    if(transport==='websocket')channel.tick();
     clearInterval(taskTimer); clearInterval(chatTimer);
     taskTimer = setInterval(work, 600 + index * 50);
     chatTimer = setInterval(() => {
@@ -114,7 +130,7 @@ function connect() {
       if (chatQueue.length) {
         const message = chatQueue.shift();
         if (!message.startsWith('[TEAM ') || channel.online) bot.chat(message);
-      } else channel.tick();
+      } else if(transport==='chat')channel.tick();
     }, 1600);
   });
   bot.on('chat', (sender, message) => {
@@ -130,8 +146,9 @@ function connect() {
   bot.on('kicked', reason => log(`Server kicked me: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`));
   bot.on('error', error => log(`Connection error: ${error.message}`));
   bot.on('end', () => {
-    generation++; spawned = false; activeTask = null; chatQueue.length = 0; memory.window = null;
+    generation++; spawned = false; minecraftConnected=false;activeTask = null; chatQueue.length = 0; memory.window = null;
     clearInterval(taskTimer); clearInterval(chatTimer);
+    if(transport==='websocket')channel.tick();
     if (!stopping) { log('Disconnected. Retrying in 5 seconds.'); reconnectTimer = setTimeout(connect, 5000); }
   });
 }
@@ -154,9 +171,9 @@ async function work() {
     for (const [kind, field] of [['Wood', 'tree'], ['Stone', 'stone'], ['Sand', 'sand']]) {
       if (view[field]) reportOnce(ctx, kind, view[field]);
     }
-    action = role.decide(view);
+    action = role.decide(view);decisions++;
     narrate(action.say || action.type);
-    await run(ctx, action);
+    await run(ctx, action);completedActions++;
   } catch (error) {
     if (error instanceof Cancelled || !ctx.alive()) return;
     log(`Replanning after ${action?.type ?? 'perception'}: ${error.message}`);
@@ -172,9 +189,15 @@ process.on('message', message => { if (message?.type === 'control') control(mess
 function shutdown() {
   stopping = true; state.running = false; save();
   clearTimeout(reconnectTimer); clearInterval(taskTimer); clearInterval(chatTimer);
+  clearInterval(commsTimer);channel.close?.();
   bot?.quit('Team stopped');
   setTimeout(() => process.exit(0), 500).unref();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+const channelOptions={state,save,learn:event=>log(`Learned ${event.kind.toLowerCase()} location from ${event.sender}: ${event.position.join(', ')}`)};
+channel=transport==='websocket'?new MinecraftChannel({...channelOptions,agentId:name,observe:observeForPeers,log,notice:say,
+  url:process.env.COMMS_URL,token:process.env.COMMS_AGENT_TOKEN}):
+  new TeamChannel({...channelOptions,send:text=>{if(spawned){bot.chat(text);log(text);}}});
+if(transport==='websocket')commsTimer=setInterval(()=>channel.tick(),2000);
 setTimeout(connect, index * 1800);

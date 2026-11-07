@@ -1,7 +1,8 @@
 // Operator-only CLI. This never sends instructions to a Minecraft bot.
+import { loadOperatorToken } from '../src/comms/operator-credentials.js';
 const [command,...args]=process.argv.slice(2);
-const token=process.env.COMMS_OPERATOR_TOKEN;
 const url=process.env.COMMS_HTTP_URL || 'http://127.0.0.1:8090';
+const token=process.env.COMMS_OPERATOR_TOKEN || loadOperatorToken(url);
 const usage='Usage: npm run comms:control -- status | isolate ID | restore ID | partition A,B C,D E | link A B on/off | heal';
 let path,body;
 if(command==='status' && !args.length)path='/api/state';
@@ -13,7 +14,7 @@ else if(['isolate','restore'].includes(command) && args.length===1) {
   path='/api/links';body={a:args[0],b:args[1],enabled:args[2]==='on'};
 } else if(command==='heal' && !args.length) {path='/api/heal';body={};}
 else {console.error(usage);process.exit(1);}
-if(!token){console.error('Set COMMS_OPERATOR_TOKEN in this operator terminal to the token printed by the relay.');process.exit(1);}
+if(!token){console.error('Start npm run comms:server locally, or set COMMS_OPERATOR_TOKEN to its operator token.');process.exit(1);}
 try {
   const response=await fetch(url+path,{method:body?'POST':'GET',signal:AbortSignal.timeout(5000),
     headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
