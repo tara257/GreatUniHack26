@@ -90,7 +90,8 @@ test('without planks, other parts of the house remain placeable', () => {
     build(w, floor);
   }
   const materials = new Set(placeable(survey(HOUSE, origin, w.nameAt), origin, w.nameAt).map(c => c.material));
-  assert.ok(materials.has('oak_log') && materials.has('oak_planks') && materials.has('oak_door'));
+  assert.ok(materials.has('oak_log') && materials.has('oak_planks'));
+  assert.ok(!materials.has('oak_door'), 'the door waits until everything else is built');
 });
 
 test('progress is the percentage of required blocks placed correctly', () => {
@@ -111,4 +112,18 @@ test('a door never counts as something to build against', () => {
   const w = world({ '104,66,200': 'oak_door' });
   const cell = { x: 104, y: 67, z: 200, material: 'oak_planks' };
   assert.equal(placeable({ missing: [cell], supports: [] }, origin, w.nameAt).length, 0);
+});
+
+test('the door is placed last, keeping the doorway open while the roof is built', () => {
+  const w = world();
+  for (let step = 0; step < 600; step++) {
+    const report = survey(HOUSE, origin, w.nameAt);
+    if (!report.missing.length) break;
+    const next = placeable(report, origin, w.nameAt);
+    const others = report.missing.filter(c => c.material !== 'oak_door' && c.material !== 'door_upper');
+    if (others.length) assert.ok(next.every(c => c.material !== 'oak_door'), 'door offered before the rest is finished');
+    build(w, next[0]);
+    if (next[0].material === 'oak_door') { w.blocks.set(`${next[0].x},${next[0].y + 1},${next[0].z}`, 'oak_door'); assert.equal(others.length, 0); }
+  }
+  assert.equal(survey(HOUSE, origin, w.nameAt).missing.length, 0);
 });

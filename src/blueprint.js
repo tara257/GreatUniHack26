@@ -143,7 +143,10 @@ export function placeable(report, origin, nameAt, blueprint = HOUSE) {
   const f = blueprint.footprint;
   const centre = { x: origin.x + (f.minX + f.maxX) / 2, z: origin.z + (f.minZ + f.maxZ) / 2 };
   const ring = c => Math.max(Math.abs(c.x - centre.x), Math.abs(c.z - centre.z));
-  const candidates = [...report.supports, ...report.missing.filter(c => !PASSIVE.has(c.material))];
+  // The door goes in last: until then the doorway is the only way into the house, and the top of
+  // the roof can only be reached from inside.
+  const othersMissing = report.supports.length > 0 || report.missing.some(c => !PASSIVE.has(c.material) && c.material !== 'oak_door');
+  const candidates = [...report.supports, ...report.missing.filter(c => !PASSIVE.has(c.material) && !(othersMissing && c.material === 'oak_door'))];
   return candidates.filter(c => hasSupport(c, nameAt)).sort((a, b) =>
     (a.material === 'filler' ? -1 : 0) - (b.material === 'filler' ? -1 : 0) ||
     a.y - b.y ||

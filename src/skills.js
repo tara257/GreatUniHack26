@@ -554,6 +554,9 @@ export async function pillarUp(ctx, spot) {
   const { bot, state } = ctx;
   if (total(counts(bot), 'filler') < spot.h) throw new Error(`Need ${spot.h} dirt for a pillar`);
   await go(ctx, new GoalBlock(spot.p.x, spot.p.y, spot.p.z), 25000);
+  // The pathfinder reports success when it finds no route at all, so check we really arrived.
+  const at = bot.entity.position.floored();
+  if (at.x !== spot.p.x || at.z !== spot.p.z || Math.abs(at.y - spot.p.y) > 0) throw new Error(`Could not reach the pillar spot ${spot.p} (stopped at ${at})`);
   state.tower = state.tower || [];
   for (let i = 0; i < spot.h; i++) {
     const filler = findItem(bot, 'filler');
@@ -582,20 +585,27 @@ export async function towerPlace(ctx, target, cells) {
   const spot = pillarSpot(bot, toVec(target), { minY: origin.y - 1, maxY: origin.y + 2 });
   if (!spot) throw new Error(`Nowhere to pillar up to ${toVec(target)}`);
   let placed = 0;
+  const skipped = {};
+  const skip = why => { skipped[why] = (skipped[why] || 0) + 1; };
   try {
+    ctx.log(`Pillar for ${toVec(target)}: standing at ${spot.p} with ${spot.h} blocks`);
     await pillarUp(ctx, spot);
+    ctx.log(`On the pillar at ${bot.entity.position.floored()}, eye ${eyeOf(bot).y.toFixed(1)}`);
     // Place every listed cell now within reach that we have material for, lowest first.
     for (const cell of [...cells].sort((a, b) => a.y - b.y)) {
       const pos = toVec(cell);
-      if (!isEmpty(bot.blockAt(pos)?.name ?? 'stone') || eyeOf(bot).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.5) continue;
+      if (!isEmpty(bot.blockAt(pos)?.name ?? 'stone')) { skip('filled'); continue; }
+      if (eyeOf(bot).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.5) { skip('out of reach'); continue; }
       const item = findItem(bot, cell.material);
       const reference = referenceFor(bot, pos, false);
-      if (!item || !reference) continue;
+      if (!item) { skip(`no ${cell.material}`); continue; }
+      if (!reference) { skip('nothing to attach to'); continue; }
       try { await bot.equip(item, 'hand'); await placeFacing(ctx, reference, cell.facing); placed++; }
       catch (error) { ctx.log(`Pillar placement at ${pos} failed: ${error.message}`); }
       check(ctx);
     }
   } finally {
+    ctx.log(`Pillar placed ${placed}; skipped ${JSON.stringify(skipped)}`);
     if (ctx.alive()) await dismantleTower(ctx);
   }
   return placed;
