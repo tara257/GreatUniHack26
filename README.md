@@ -2,7 +2,7 @@
 
 Five independent Minecraft agents cooperate to build a house, even when their communication links fail.
 
-**Current milestone: a starter house.** Each agent has a role and runs its own perceive → decide → act loop using deterministic rules (no LLM, no central controller):
+**Current milestone: a Nordic cottage.** Each agent has a role and runs its own perceive → decide → act loop using deterministic rules (no LLM, no central controller):
 
 | Agent | Role | What it does on its own |
 | --- | --- | --- |
@@ -12,7 +12,7 @@ Five independent Minecraft agents cooperate to build a house, even when their co
 | Sage_Crafter | Crafter | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
 | Wren_Scout | Scout | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over WebSockets. |
 
-On the first launch all five roles are selected. In the dashboard, tick the roles you want and click **Apply roster**, then **Start work**. Added roles join and start automatically; removed roles leave Minecraft with their memory saved. The choice is remembered for the next launch. Explicit `TEAM_ROLES` (see `.env.example`) overrides the saved selection, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 83-block starter house.
+On the first launch all five roles are selected. In the dashboard, tick the roles you want and click **Apply roster**, then **Start work**. Added roles join and start automatically; removed roles leave Minecraft with their memory saved. The choice is remembered for the next launch. Explicit `TEAM_ROLES` (see `.env.example`) overrides the saved selection, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 339-block Nordic cottage.
 
 ## Live dashboard
 
@@ -88,6 +88,17 @@ npm ci
 To demonstrate a failure while watching Minecraft, run `npm run comms:control -- isolate Moss_Lumberjack` in another terminal. Moss continues its own role, but it cannot exchange new peer information. Run `npm run comms:control -- restore Moss_Lumberjack` to restore that link. `npm run comms:control -- status` shows which links can communicate. If a partition or pairwise fault also applies, use `heal` to clear all fault layers.
 
 To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **server terminal** (without a slash). Return with `gamemode survival YOUR_USERNAME`. To shut down, type `quit` in the bots terminal, then `stop` in the server terminal.
+
+### Build another house in the same world
+
+Restarting the server keeps the existing world; bots repair or finish the house at their configured plot. To start another house, type `quit` in the bots terminal, choose clear ground with room for the 9×11 cottage, and set `BUILD_ORIGIN=x,y,z` in `.env` (the floor's northwest corner, one block above the ground). Keep storage at its existing location. Add the previous house's bounding box to `PRESERVED_AREAS` so agents will not harvest or dig through it. For example:
+
+```dotenv
+BUILD_ORIGIN=19,71,60
+PRESERVED_AREAS=[[36,71,40,43,77,48]]
+```
+
+Each preservation box uses inclusive `[minX,minY,minZ,maxX,maxY,maxZ]` coordinates; include the old floor, roof and step, and keep it separate from the new site. Restart with `npm run bots`, then use **Start work** in the dashboard or `!team start` in Minecraft chat. Agents inspect the new plot and the dashboard follows their new progress. The Minecraft server, existing builds, inventories and private memories stay in place. **Reset simulation** only resets the communication demonstration; it does not start another house.
 
 ## Chat controls
 

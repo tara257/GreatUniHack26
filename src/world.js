@@ -15,6 +15,25 @@ function parsePosition(text, label) {
 const storageOverride = parsePosition(process.env.STORAGE_POS, 'STORAGE_POS');
 const originOverride = parsePosition(process.env.BUILD_ORIGIN, 'BUILD_ORIGIN');
 
+// Finished builds remain protected when BUILD_ORIGIN moves to the next plot.
+function parsePreservedAreas(text) {
+  if (!text) return [];
+  let areas;
+  try { areas = JSON.parse(text); } catch { /* Report the expected format below. */ }
+  if (!Array.isArray(areas) || areas.some(area => !Array.isArray(area) || area.length !== 6 ||
+    area.some(n => !Number.isSafeInteger(n)) || area.slice(0, 3).some((n, i) => n > area[i + 3]))) {
+    throw new Error('PRESERVED_AREAS must be JSON boxes: [[minX,minY,minZ,maxX,maxY,maxZ],...].');
+  }
+  return areas;
+}
+const preservedAreas = parsePreservedAreas(process.env.PRESERVED_AREAS);
+
+/** Completed builds: never harvest, clear, or place blocks here. Bounds are inclusive. */
+export function isPreserved(pos) {
+  return preservedAreas.some(([minX, minY, minZ, maxX, maxY, maxZ]) =>
+    pos.x >= minX && pos.x <= maxX && pos.y >= minY && pos.y <= maxY && pos.z >= minZ && pos.z <= maxZ);
+}
+
 /** Shared storage lives beside the world spawn unless configured. */
 export function storageAnchor(bot) {
   return storageOverride || bot.spawnPoint.floored();
@@ -30,6 +49,7 @@ export const STORAGE_RADIUS = 4;
 
 /** Areas no agent should dig through: the house site and the storage corner. */
 export function isProtected(bot, pos) {
+  if (isPreserved(pos)) return true;
   const anchor = storageAnchor(bot);
   if (Math.abs(pos.x - anchor.x) <= STORAGE_RADIUS && Math.abs(pos.z - anchor.z) <= STORAGE_RADIUS &&
     Math.abs(pos.y - anchor.y) <= 3) return true;

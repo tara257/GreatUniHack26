@@ -7,8 +7,9 @@
 !.env.example
 
 node_modules/
-.server/
-.state/
+# Runtime directories may be local symlinks when the checkout is cloud-synced.
+/.server
+/.state
 .test-state/
 *.log
 dashboard/dist/

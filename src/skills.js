@@ -5,7 +5,7 @@ import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, plank
 import { COMPONENTS } from './plan.js';
 import { WOOD, wood } from './design.js';
 import { HOUSE, insideFootprint } from './blueprint.js';
-import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset, isProtected } from './world.js';
+import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset, isProtected, isPreserved } from './world.js';
 
 const { goals } = pathfinderModule;
 const { Goal, GoalNear, GoalXZ, GoalNearXZ, GoalBlock, GoalLookAtBlock, GoalPlaceBlock } = goals;
@@ -101,10 +101,16 @@ export async function collectDrops(ctx, around, radius = 5) {
 export async function dig(ctx, target, { collect = true, approach = true } = {}) {
   const { bot } = ctx;
   const pos = toVec(target);
+  if (isPreserved(pos)) throw new Error(`Preserved build: cannot dig at ${pos}`);
   let block = bot.blockAt(pos);
   if (!block || isEmpty(block.name)) return false;
   if (approach && !bot.canDigBlock(block)) {
-    await go(ctx, new GoalLookAtBlock(pos, bot.world, { reach: 4.4 }), 20000);
+    // Grass has no collision shape for GoalLookAtBlock's raycast to hit.
+    // Walk close enough to clear it instead of searching forever for a visible face.
+    const goal = block.boundingBox === 'empty'
+      ? new GoalNear(pos.x, pos.y, pos.z, 2)
+      : new GoalLookAtBlock(pos, bot.world, { reach: 4.4 });
+    await go(ctx, goal, 20000);
     block = bot.blockAt(pos);
     if (!block || isEmpty(block.name)) return false;
   }
@@ -164,6 +170,7 @@ export async function placeFacing(ctx, reference, facing) {
 export async function placeAt(ctx, target, group, facing = null) {
   const { bot } = ctx;
   const pos = toVec(target);
+  if (isPreserved(pos)) throw new Error(`Preserved build: cannot place at ${pos}`);
   const item = findItem(bot, group);
   if (!item) throw new Error(`No ${group} to place`);
   const doorLike = GROUPS.door(item.name);
