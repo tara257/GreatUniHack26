@@ -53,9 +53,13 @@ export const SAFE_FOOD = new Set(['apple', 'bread', 'carrot', 'baked_potato', 'b
   'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton', 'rabbit', 'cooked_rabbit', 'cod', 'cooked_cod',
   'salmon', 'cooked_salmon', 'cooked_chicken', 'melon_slice', 'sweet_berries']);
 
-export function priority({ food, health, hasFood, threat, foodCount, complete }) {
+export function priority({ food, health, hasFood, threat, foodCount, complete, shelterReady = false, night = false }) {
   if (threat) return 'escape';
   if (hasFood && food < (health < 20 ? 20 : 18)) return 'eat';
+  // A safe stationary bot can wait for daylight without spending hunger on a
+  // speculative trip. Do not leave shelter just to fill a food reserve at night.
+  if (night && shelterReady) return 'shelter';
+  if (health <= 8 && food >= 18) return 'recover';
   if (food <= 12 || (health < 20 && food < 18 && !hasFood) || (complete && foodCount < 4)) return 'forage';
   if (health <= 6) return 'recover';
   return complete ? 'maintain' : 'build';

@@ -11,6 +11,7 @@
     "setup:server": "node scripts/setup-server.js",
     "server": "node scripts/server.js",
     "bots": "node --env-file-if-exists=.env src/team.js",
+    "report": "node --env-file-if-exists=.env scripts/report.js",
     "test": "node --test"
   },
   "dependencies": {

@@ -8,7 +8,7 @@ const children = names.map((name, index) => fork(new URL('./bot.js', import.meta
 
 console.log('\nShelter team starting: Ember, Flint, Moss.');
 console.log('Minecraft chat: !team help');
-console.log('Terminal controls: start | pause | status | home X Y Z | comms off | comms on | quit');
+console.log('Terminal controls: start | pause | status | stats | home X Y Z | comms off | comms on | quit');
 console.log('Goal: build a shared house, gather food, and survive.\n');
 const input = createInterface({ input: process.stdin, output: process.stdout });
 input.on('line', line => {

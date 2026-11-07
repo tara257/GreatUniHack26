@@ -25,6 +25,8 @@ To watch, type `gamemode spectator YOUR_USERNAME` in the **server terminal** (wi
 - Send temporary work claims and resource discoveries through Minecraft chat. Claims expire after 30 seconds; they are hints, not a distributed lock. Duplicate work can occur during outages and is resolved by inspecting the actual blocks.
 - Prioritize nearby threats and hunger over building. They flee hostile mobs, can strike nearby attackers while retreating, hunt nearby passive animals, collect food, and eat safe food. Once the house is ready they return to it, close the door, maintain food reserves, and repair missing planned blocks.
 - Remember deaths, briefly avoid reported danger areas, respawn, and replan. These are saved observations, **not neural-network training**.
+- Save failed routes across restarts, retry persistent failures less often, and prefer alternative waypoints. Blocked routes and deaths can be shared through chat; their effects expire instead of permanently blacklisting an area.
+- Return to a completed shelter at night, interrupt expeditions at dusk, and use separate resting spots. Low-health bots with enough hunger to regenerate recover before collecting extra food. They leave the doorway clear and avoid closing it on a teammate.
 
 This is a survival prototype, not a promise of indefinite survival. It has no farming, armour progression, beds, sophisticated combat, or general-purpose architectural planning. It needs an accessible, flat site and nearby resources. Difficult terrain, scarce food, collisions, and mobs can still interrupt progress.
 
@@ -34,6 +36,7 @@ This is a survival prototype, not a promise of indefinite survival. It has no fa
 | --- | --- |
 | `!team start` | Begin/resume building and survival decisions. |
 | `!team status` | Report current task, observed house progress, health, hunger, resources, deaths, and communication state. |
+| `!team stats` | Show recorded navigation successes/failures, avoided retries, and deaths since experience tracking began. |
 | `!team pause` | Stop autonomous work and movement. |
 | `!team home X Y Z` | Set the common floor corner; existing blocks are preserved. |
 | `!team come` | Pause and approach you if you are nearby. |
@@ -75,9 +78,19 @@ The development server binds to **127.0.0.1 only** and uses offline bot identiti
 
 Optional settings are described in `.env.example`. Bot port/version must match the server. n8n could later collect demonstration results; the live agents must continue independently of it.
 
+## Learning and measuring progress
+
+Run `npm run report` for local snapshots of health, food, house progress, navigation outcomes, and recent deaths. This reporter is for people; agents still read only their own state files. Snapshot ages are displayed because an agent can be busy in a longer action.
+
+Each bot keeps bounded route records, temporary danger observations, and its latest 128 decision/navigation events in its own `.state/NAME.json`. A failed route gets a 15-second cooldown, increasing to at most three minutes on repeated failure. A later success clears it. Operator pauses and threat interruptions do not teach false failures; genuine navigation timeouts do. Shared failure reports retain their original time, and an older replay cannot override a newer local success.
+
+This is experience-based adaptation of hand-written skills, not a trained neural network. See [the learning plan](docs/learning.md) for how to evaluate improvements and when model training would make sense.
+
 ## Verification
 
 `npm test` checks the shelter enclosure and roof supports, separate task selection, takeover after a stall, damage repair, survival priorities, communication isolation, replay/deduplication, expiring claims, and restart persistence. Live gameplay still needs the Java server.
+
+Experience regressions also check increasing retry delays, newer-success precedence over replay, decaying death lessons, memory bounds, nightfall interrupts, doorway yielding, timeout learning, and avoiding false lessons from operator pauses. The improved controller was smoke-tested in the existing completed house: Ember and Flint reached separate resting spots, and Moss successfully left the doorway to forage. This is functional verification, not a measured survival-rate comparison.
 
 Live verification on 7 November 2026: the agents completed all **84 planned placements** at the development site, including the door, furnace, and torch. They gathered/crafted construction resources, hunted and ate, and switched to food gathering and maintenance afterwards. Two bots were moved back from the previous mission's distant locations for the initial setup; no construction materials were spawned. During a communication outage, all three agents' received knowledge stayed unchanged while Ember placed two additional blocks. Restoring communication recovered missed facts. Survival remains imperfect: Moss died and resumed from saved memory during the run.
 

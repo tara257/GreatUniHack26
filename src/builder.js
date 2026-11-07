@@ -1,6 +1,7 @@
 import pathfinderModule from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
 import { blueprint, progress, selectTask, matches, keyOf, SAFE_FOOD, priority } from './house.js';
+import { Experience } from './experience.js';
 
 const { goals: { GoalNear, GoalNearXZ, GoalLookAtBlock, GoalPlaceBlock } } = pathfinderModule;
 const vector = p => new Vec3(...p);
@@ -21,12 +22,32 @@ export class Builder {
     this.active = null;
     this.lastWarning = 0;
     this.exploreStep = 0;
+    this.experience = new Experience(state,save);
+    this.nextDecisionAt = 0;
+    this.lastTelemetry = 0;
   }
   get plan() { return this.state.home ? blueprint(this.state.home) : []; }
   get home() { return vector(this.state.home); }
   items(test) { return this.bot.inventory.items().filter(i => test(i.name)); }
   count(test) { return this.items(test).reduce((n, i) => n + i.count, 0); }
   block(p) { return this.bot.blockAt(Array.isArray(p) ? vector(p) : p); }
+  coordinates(p) { return [p.x,p.y,p.z]; }
+  inside(p = this.bot.entity.position) {
+    return p.x >= this.home.x+1 && p.x < this.home.x+4 && p.z >= this.home.z+1 && p.z < this.home.z+4 &&
+      p.y >= this.home.y && p.y < this.home.y+3;
+  }
+  inDoorway(p = this.bot.entity.position) {
+    return Math.abs(p.x-(this.home.x+2.5))<0.6 && p.z>=this.home.z-0.35 && p.z<this.home.z+1.3 &&
+      p.y>=this.home.y+0.9 && p.y<this.home.y+3;
+  }
+  get night() { const time=this.bot.time?.timeOfDay; return Number.isFinite(time) && time>=12_000; }
+  learn(event) { this.experience.observe(event); }
+  rememberDeath() {
+    if (!this.bot.entity) return;
+    const event=this.channel.publish('Death',this.bot.entity.position);
+    this.experience.observe(event);
+    this.experience.episode('survive','died',event.position);
+  }
   status() {
     const p = progress(this.plan, pos => this.block(pos));
     return `${this.task}. House ${p.complete}/${p.total}, health ${Math.ceil(this.bot.health)}/20, food ${this.bot.food}/20, logs ${this.count(isLog)}, planks ${this.count(isPlank)}, deaths ${this.state.deaths}, comms ${this.channel.online ? 'on' : 'OFF'}`;
@@ -34,8 +55,8 @@ export class Builder {
   narrate(text) {
     if (this.task !== text) { this.task = text; this.say(text); }
   }
-  cancel() {
-    if (this.active) this.active.cancelled = true;
+  cancel(reason = 'operator') {
+    if (this.active) { this.active.cancelled = true; this.active.cancelReason=reason; }
     this.bot.pathfinder.setGoal(null);
     this.bot.stopDigging();
     this.bot.deactivateItem();
@@ -48,10 +69,16 @@ export class Builder {
   async go(goal) {
     this.check();
     const target = goal.pos || (Number.isFinite(goal.x) && Number.isFinite(goal.z) ? new Vec3(goal.x,goal.y ?? this.home.y+1,goal.z) : null);
-    const inside = p => p.x >= this.home.x+1 && p.x < this.home.x+4 && p.z >= this.home.z+1 && p.z < this.home.z+4 && p.y < this.home.y+3;
+    const essential = target && (this.inside(target) || this.active.kind==='escape');
+    if (target && !essential && this.experience.blocked(this.coordinates(target))) {
+      this.experience.deferred();
+      const error=new Error('Remembered route failure; choosing another route');
+      error.deferred=true; throw error;
+    }
+    try {
     if (target && this.block(this.home.offset(2,1,0))?.name.endsWith('_door')) {
-      if (inside(target) && !inside(this.bot.entity.position)) await this.passDoor(true);
-      else if (!inside(target) && inside(this.bot.entity.position)) await this.passDoor(false);
+      if (this.inside(target) && !this.inside()) await this.passDoor(true);
+      else if (!this.inside(target) && (this.inside() || this.inDoorway())) await this.passDoor(false);
     }
     // Pathfinder can stall below a low dirt ceiling after falling into a hollow.
     // Clearing natural headroom gives it space to plan a staircase out.
@@ -60,24 +87,38 @@ export class Builder {
       await this.bot.dig(overhead); this.check();
     }
     await this.bot.pathfinder.goto(goal); this.check();
+    if (target) this.experience.succeeded(this.coordinates(target));
+    } catch(error) {
+      // Operator pauses, deaths, and survival interrupts are not failed routes.
+      if (target && (!this.active?.cancelled || this.active.cancelReason==='timeout') && !error.transient) {
+        this.experience.failed(this.coordinates(target),error.message);
+        this.channel.publish('Blocked',target);
+      }
+      throw error;
+    }
   }
   async passDoor(enter) {
     // Vanilla door collision is unreliable in pathfinder. Approach normally,
     // open it, then walk through the doorway under the same survival interrupt.
     const approach = this.home.offset(2,1,enter ? -1 : 1);
+    await this.openDoor();
     if (this.bot.entity.position.y >= this.home.y+3) {
       await this.bot.pathfinder.goto(new GoalNearXZ(this.home.x+2,this.home.z-2,0)); this.check();
     }
-    await this.bot.pathfinder.goto(new GoalNearXZ(approach.x,approach.z,0)); this.check();
+    if (!this.inDoorway()) {
+      await this.bot.pathfinder.goto(new GoalNearXZ(approach.x,approach.z,0)); this.check();
+    }
     await this.openDoor();
     const destination = this.home.offset(2.5,2.5,enter ? 2.5 : -1.5);
-    await this.bot.lookAt(destination,true); this.check();
-    this.bot.setControlState('forward',true);
-    this.bot.setControlState('jump',true);
     try {
-      for(let i=0;i<25;i++) {
+      for(let i=0;i<35;i++) {
         const z=this.bot.entity.position.z;
         if (enter ? z>=this.home.z+1.3 : z<this.home.z-0.5) break;
+        if (i%5===0) await this.openDoor();
+        await this.bot.lookAt(destination,true); this.check();
+        this.bot.setControlState('forward',true);
+        // Jump only onto the raised floor. Jumping under a low roof jams entry.
+        this.bot.setControlState('jump',enter && this.bot.entity.position.y<this.home.y+0.95);
         await this.wait(100);
       }
     } finally {
@@ -85,7 +126,10 @@ export class Builder {
       this.bot.setControlState('jump',false);
     }
     const crossed=enter ? this.bot.entity.position.z>=this.home.z+1.3 : this.bot.entity.position.z<this.home.z-0.5;
-    if (!crossed) throw new Error('Doorway is obstructed; trying again shortly');
+    if (!crossed) {
+      const error=new Error('Doorway is occupied; yielding before another attempt');
+      error.transient=true; throw error;
+    }
     await this.closeDoor();
   }
   async travel(p, range = 3) {
@@ -93,7 +137,14 @@ export class Builder {
     const delta = p.minus(me); delta.y = 0;
     if (delta.norm() > 22) {
       // Short waypoints keep path searches bounded even after distant respawns.
-      const next = me.plus(delta.normalize().scaled(14));
+      const direction=delta.normalize();
+      const candidates=[0,0.6,-0.6,1,-1].map(angle=>me.offset(
+        (direction.x*Math.cos(angle)-direction.z*Math.sin(angle))*14,0,
+        (direction.x*Math.sin(angle)+direction.z*Math.cos(angle))*14));
+      const available=candidates.filter(q=>!this.experience.blocked([Math.floor(q.x),this.home.y+1,Math.floor(q.z)]));
+      available.sort((a,b)=>(a.distanceTo(p)+this.experience.risk(this.coordinates(a))*6)-
+        (b.distanceTo(p)+this.experience.risk(this.coordinates(b))*6));
+      const next=available[0] || candidates[0];
       await this.go(new GoalNearXZ(Math.floor(next.x),Math.floor(next.z),3));
     } else await this.go(new GoalNear(p.x,p.y,p.z,range));
   }
@@ -107,8 +158,7 @@ export class Builder {
     });
   }
   dangerous(p) {
-    return [...this.state.history, ...this.state.knowledge].some(e => e.kind === 'Danger' &&
-      Date.now() - (e.time || 0) < 180_000 && vector(e.position).distanceTo(p) < 5);
+    return this.experience.risk(this.coordinates(p)) > 2;
   }
   claimed(p) {
     const latest = new Map();
@@ -126,28 +176,43 @@ export class Builder {
     if (!this.state.running || !this.bot.entity || this.bot.health <= 0) return;
     const threats = this.threats();
     if (this.active) {
-      if (threats.length && this.active.kind !== 'escape') this.cancel();
+      if (threats.length && this.active.kind !== 'escape') this.cancel('threat');
+      else if (this.night && this.shelterReady && ['build','forage'].includes(this.active.kind)) this.cancel('nightfall');
+      else if (this.bot.food<=6 && this.count(n=>SAFE_FOOD.has(n)) && !['eat','escape'].includes(this.active.kind)) this.cancel('hunger');
       return;
     }
+    if (Date.now()<this.nextDecisionAt) return;
     if (!this.state.home) return this.narrate('Choose our house site: !team home X Y Z (floor corner)');
     const p = progress(this.plan, pos => this.block(pos));
+    this.shelterReady=p.missing.every(t=>!['planks','door','torch'].includes(t.kind));
     if (p.complete !== this.lastCount) { this.lastProgress = Date.now(); this.lastCount = p.complete; }
     const foodCount = this.count(n => SAFE_FOOD.has(n));
     const action = priority({ food: this.bot.food, health: this.bot.health, hasFood: foodCount > 0,
-      threat: threats.length > 0, foodCount, complete: p.missing.length === 0 });
+      threat: threats.length > 0, foodCount, complete: p.missing.length === 0,
+      shelterReady:this.shelterReady,night:this.night });
+    this.experience.action(action,this.coordinates(this.bot.entity.position));
+    if (Date.now()-this.lastTelemetry>5000) {
+      this.state.telemetry={time:Date.now(),health:this.bot.health,food:this.bot.food,
+        position:this.coordinates(this.bot.entity.position),action,house:p.complete,total:p.total,night:this.night};
+      this.save(); this.lastTelemetry=Date.now();
+    }
     const task = { kind: action, cancelled: false };
     this.active = task;
-    const timeout = setTimeout(() => this.cancel(), 24_000);
+    const timeout = setTimeout(() => this.cancel('timeout'), 24_000);
     try {
       if (action === 'escape') await this.escape(threats);
       else if (action === 'eat') await this.eat();
       else if (action === 'forage') await this.forage();
-      else if (action === 'recover') { this.narrate('Recovering at the shelter'); await this.returnHome(); }
+      else if (action === 'recover' || action === 'shelter') {
+        this.narrate(action==='shelter' ? 'Staying in shelter until daylight' : 'Recovering at the shelter');
+        await this.returnHome(); await this.wait(2000);
+      }
       else if (action === 'maintain') await this.maintain();
       else await this.build(p);
     } catch (error) {
-      if (!task.cancelled) this.log(`Replanning: ${error.message}`);
-      if (Date.now() - this.lastWarning > 60_000 && !task.cancelled) {
+      this.nextDecisionAt=Date.now()+(error.transient ? 3500+this.index*800 : 2000);
+      if (!task.cancelled && !error.deferred) this.log(`Replanning: ${error.message}`);
+      if (Date.now() - this.lastWarning > 60_000 && !task.cancelled && !error.deferred) {
         this.say('I hit an obstacle. Trying another route or job.'); this.lastWarning = Date.now();
       }
     } finally {
@@ -164,9 +229,14 @@ export class Builder {
     await this.bot.consume(); this.check();
   }
   async returnHome() {
-    await this.openDoor();
-    const target = this.home.offset(2, 1, 2);
-    await this.go(new GoalNear(target.x, target.y, target.z, 1));
+    if (this.bot.entity.position.distanceTo(this.home)>18) {
+      await this.travel(this.home.offset(2,1,-2),2); return;
+    }
+    // Separate resting spots keep three agents from blocking the one-block door.
+    const target = this.home.offset(1+this.index, 1, 3);
+    if (this.bot.entity.position.distanceTo(target.offset(0.5,0,0.5))>0.65) {
+      await this.go(new GoalNear(target.x, target.y, target.z, 0));
+    }
     await this.closeDoor();
   }
   async openDoor() {
@@ -177,6 +247,9 @@ export class Builder {
   }
   async closeDoor() {
     const door = this.block(this.home.offset(2, 1, 0));
+    const occupied=Object.values(this.bot.entities).some(e=>e!==this.bot.entity && e.username &&
+      e.position.distanceTo(this.home.offset(2.5,1,0.5))<1.25);
+    if (occupied) return;
     if (door?.name.endsWith('_door') && door.getProperties().open && door.position.distanceTo(this.bot.entity.position) < 4) {
       await this.bot.activateBlock(door); this.check();
     }
@@ -184,7 +257,7 @@ export class Builder {
   async escape(threats) {
     const enemy = threats.sort((a,b) => a.position.distanceTo(this.bot.entity.position) - b.position.distanceTo(this.bot.entity.position))[0];
     if (Date.now() - (this.lastDanger || 0) > 15_000) {
-      this.channel.publish('Danger', enemy.position); this.lastDanger = Date.now();
+      this.experience.observe(this.channel.publish('Danger', enemy.position)); this.lastDanger = Date.now();
     }
     this.narrate(`Avoiding ${enemy.name}; survival comes first`);
     const me = this.bot.entity.position;
@@ -194,7 +267,7 @@ export class Builder {
       this.bot.attack(enemy);
     }
     const door = this.block(this.home.offset(2, 1, 0));
-    if (door?.name.endsWith('_door') && this.home.distanceTo(me) < 18 && this.home.distanceTo(enemy.position) > 6) {
+    if (this.shelterReady && door?.name.endsWith('_door') && this.home.distanceTo(me) < 18 && !this.inside(enemy.position)) {
       await this.returnHome();
     } else {
       const away = me.minus(enemy.position); away.y = 0;
@@ -207,6 +280,7 @@ export class Builder {
     if (await this.collectDrops(n => SAFE_FOOD.has(n), 12)) return;
     const animals = Object.values(this.bot.entities).filter(e => prey.test(e.name || '') &&
       e.position.distanceTo(this.bot.entity.position) < 40 && !this.dangerous(e.position) &&
+      e.position.distanceTo(this.home)<72 && !this.experience.blocked(this.coordinates(e.position)) &&
       (this.failed.get(`animal:${e.id}`) || 0) < Date.now());
     animals.sort((a,b) => a.position.distanceTo(this.bot.entity.position) - b.position.distanceTo(this.bot.entity.position));
     if (!animals.length) return this.explore('Looking for food', 'Food');
@@ -247,6 +321,7 @@ export class Builder {
     // Received discoveries are useful hints, never assumed to still exist.
     const known = [...this.state.knowledge].reverse().find(e => e.kind === kind &&
       !this.dangerous(vector(e.position)) && (this.failed.get(`hint:${e.id}`) || 0) < Date.now() &&
+      !this.experience.blocked(e.position) && Date.now()-(e.time || 0)<600_000 &&
       vector(e.position).distanceTo(this.bot.entity.position) > 5 && vector(e.position).distanceTo(this.home) < 80);
     if (known) {
       this.failed.set(`hint:${known.id}`, Date.now() + 90_000);
@@ -267,6 +342,7 @@ export class Builder {
     const positions = this.bot.findBlocks({ matching: b => b && wanted(b.name), maxDistance: dirt ? 12 : 32, count: 96 });
     const now = Date.now(), me = this.bot.entity.position;
     const candidates = positions.filter(p => (this.failed.get(p.toString()) || 0) < now && !this.dangerous(p) &&
+      !this.experience.blocked(this.coordinates(p)) &&
       p.y <= me.y + 5 && p.y >= me.y - 6 && !this.plan.some(t => keyOf(t.position) === keyOf([p.x,p.y,p.z])) &&
       !(dirt && p.x >= this.home.x-1 && p.x <= this.home.x+5 && p.z >= this.home.z-1 && p.z <= this.home.z+5));
     const score = p => me.distanceTo(p) + 3 * (1 - Math.cos(Math.atan2(p.z-me.z,p.x-me.x) - this.index * Math.PI * 2/3));
@@ -423,7 +499,7 @@ export class Builder {
     else this.idleSince ??= Date.now();
     const target = selectTask({ ...p, index:this.index,
       stalledMs:Math.max(Date.now()-this.lastProgress,this.idleSince ? Date.now()-this.idleSince : 0),
-      unavailable:t => (this.failed.get(keyOf(t.position)) || 0) > Date.now(),
+      unavailable:t => (this.failed.get(keyOf(t.position)) || 0) > Date.now() || this.experience.blocked(t.position),
       claimed:t => this.claimed(t.position) });
     if (!target) {
       const reserve = Math.min(12,p.missing.filter(t=>t.kind==='planks').length);
@@ -453,7 +529,7 @@ export class Builder {
   }
   async maintain() {
     this.narrate('House complete! Keeping watch, finding food, and repairing damage');
-    if (this.bot.entity.position.distanceTo(this.home.offset(2,1,2)) > 2) await this.returnHome();
+    await this.returnHome();
     await this.closeDoor();
     await this.wait(1500);
   }

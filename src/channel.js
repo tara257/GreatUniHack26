@@ -12,7 +12,8 @@ export class TeamChannel {
   }
 
   fresh(event) {
-    return event.kind !== 'Claim' || Date.now() - (event.time || 0) < 30_000;
+    const ttl = { Claim: 30_000, Blocked: 30_000, Danger: 90_000, Death: 600_000 }[event.kind];
+    return !ttl || Date.now() - (event.time || 0) < ttl;
   }
 
   publish(kind, position) {
@@ -21,7 +22,7 @@ export class TeamChannel {
     this.state.history.push(event);
     this.state.history = this.state.history.slice(-32);
     // Claims are short leases and must not sit behind a discovery backlog.
-    if (kind === 'Claim') this.queue.unshift(event); else this.queue.push(event);
+    if (['Claim','Blocked','Danger','Death'].includes(kind)) this.queue.unshift(event); else this.queue.push(event);
     this.save();
     return event;
   }
@@ -55,7 +56,7 @@ export class TeamChannel {
       }
       return true;
     }
-    const match = /^\[TEAM ([a-f0-9]{8})\] (Wood|Danger|Food|Claim|Built) at (-?\d+) (-?\d+) (-?\d+)(?: @(\d+))?$/.exec(message);
+    const match = /^\[TEAM ([a-f0-9]{8})\] (Wood|Danger|Death|Blocked|Food|Claim|Built) at (-?\d+) (-?\d+) (-?\d+)(?: @(\d+))?$/.exec(message);
     if (!match) return false;
     const key = `${sender}:${match[1]}`;
     if (this.state.seen.includes(key)) return false;

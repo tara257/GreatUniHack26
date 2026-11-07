@@ -36,8 +36,9 @@ function say(text) {
 
 function control(command, player) {
   if (!spawned) return log('Waiting to join the local server.');
-  if (command === 'help') return say('Commands: !team start | pause | status | home X Y Z | comms off | comms on | come');
+  if (command === 'help') return say('Commands: !team start | pause | status | stats | home X Y Z | comms off | comms on | come');
   if (command === 'status') return say(builder.status());
+  if (command === 'stats') return say(builder.experience.summary());
   if (command.startsWith('home ')) {
     const home = parseHome(command.slice(5));
     if (!home) return say('Use !team home X Y Z with integer coordinates for the floor corner.');
@@ -71,7 +72,10 @@ function connect() {
     username: name, version: process.env.MC_VERSION || '1.21.1', auth: 'offline' });
   bot.loadPlugin(pathfinder);
   channel = new TeamChannel({ state, save, send: text => { if (spawned) { bot.chat(text); log(text); } },
-    learn: event => log(`Learned ${event.kind.toLowerCase()} from ${event.sender}: ${event.position.join(', ')}`) });
+    learn: event => {
+      builder?.learn(event);
+      log(`Learned ${event.kind.toLowerCase()} from ${event.sender}: ${event.position.join(', ')}`);
+    } });
   builder = new Builder({ bot, state, channel, index, save, say, log });
   bot.on('spawn', () => {
     spawned = true;
@@ -85,6 +89,7 @@ function connect() {
     // The roof is four blocks above the outside ground; bots must be able to leave it.
     movement.maxDropDown = 4;
     movement.canOpenDoors = true;
+    movement.exclusionAreasStep.push(block => Math.min(40,builder.experience.risk([block.position.x,block.position.y,block.position.z])*4));
     movement.scafoldingBlocks = [bot.registry.itemsByName.dirt.id];
     movement.exclusionAreasPlace.push(block => {
       if (!state.home) return 0;
@@ -113,8 +118,8 @@ function connect() {
     if (message.startsWith('!team ')) control(message.slice(6).trim().toLowerCase(), sender);
   });
   bot.on('death', () => {
-    builder.cancel(); spawned = false; state.deaths++;
-    if (bot.entity) channel.publish('Danger', bot.entity.position);
+    builder.cancel('death'); spawned = false; state.deaths++;
+    builder.rememberDeath();
     save(); log('Died. Remembered the location; respawning and replanning.');
   });
   bot.on('kicked', reason => log(`Server kicked me: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`));
