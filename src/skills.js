@@ -4,7 +4,7 @@ import pathfinderModule from 'mineflayer-pathfinder';
 import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, planksFor, dominantWood, woodOf } from './items.js';
 import { COMPONENTS } from './plan.js';
 import { HOUSE, insideFootprint } from './blueprint.js';
-import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset } from './world.js';
+import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset, isProtected } from './world.js';
 
 const { goals } = pathfinderModule;
 const { Goal, GoalNear, GoalXZ, GoalNearXZ, GoalBlock, GoalLookAtBlock, GoalPlaceBlock } = goals;
@@ -73,11 +73,11 @@ export const EXPLORE_SPACING = 16;
  * HOME_RANGE, then starting again). Each agent's spiral is rotated by its own preferred direction so
  * they search different ground first. A waypoint that can't be reached is skipped.
  */
-export async function explore(ctx, angle, distance = EXPLORE_SPACING, ms = 20000) {
+export async function explore(ctx, angle, distance = EXPLORE_SPACING, ms = 20000, range = HOME_RANGE) {
   const home = storageAnchor(ctx.bot);
   const step = ctx.memory.exploreStep || 0;
   ctx.memory.exploreStep = step + 1;
-  const { x, z } = waypointOffset(step, distance, Math.floor(HOME_RANGE / distance));
+  const { x, z } = waypointOffset(step, distance, Math.floor(range / distance));
   const cos = Math.cos(angle), sin = Math.sin(angle);
   await go(ctx, new GoalXZ(Math.floor(home.x + x * cos - z * sin), Math.floor(home.z + x * sin + z * cos)), ms);
 }
@@ -513,21 +513,24 @@ const eyeOf = bot => bot.entity.position.offset(0, 1.62, 0);
 
 export const MAX_PILLAR = 6;
 
+// Leaves don't stop a pillar: they are cleared as we climb through them.
+const passable = name => name === 'air' || /leaves$/.test(name);
+
 /**
- * Find somewhere to stand and pillar up so `target` is within reach: open ground just outside the
- * house or on its floor inside, whichever needs the shortest pillar.
+ * Find somewhere to stand and pillar up so `goal` is within reach, needing the shortest pillar.
+ * Searches standable ground from minY to maxY within 3 blocks of the goal column.
  */
-function pillarSpot(bot, origin, goal) {
+export function pillarSpot(bot, goal, { minY, maxY }) {
   const centre = goal.offset(0.5, 0.5, 0.5);
   let best = null;
   for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) {
-    for (let y = origin.y - 1; y <= origin.y + 2; y++) {
+    for (let y = minY; y <= maxY; y++) {
       const p = new Vec3(goal.x + dx, y, goal.z + dz);
       const below = bot.blockAt(p.offset(0, -1, 0));
       if (!below || isSoft(below.name) || isInteractive(below.name) || bot.blockAt(p)?.name !== 'air') continue;
       for (let h = 0; h <= MAX_PILLAR; h++) {
-        // Room for the pillar plus our body above it, and not through the target itself.
-        const blocked = [h, h + 1].some(k => bot.blockAt(p.offset(0, k, 0))?.name !== 'air' || p.offset(0, k, 0).equals(goal));
+        // Room for the pillar plus our body above it, and not through the goal itself.
+        const blocked = [h, h + 1].some(k => !passable(bot.blockAt(p.offset(0, k, 0))?.name ?? 'stone') || p.offset(0, k, 0).equals(goal));
         if (blocked) break;
         const eye = new Vec3(p.x + 0.5, p.y + h + 1.62, p.z + 0.5);
         if (eye.distanceTo(centre) <= 4.3) {
@@ -542,21 +545,24 @@ function pillarSpot(bot, origin, goal) {
   return best;
 }
 
-/** Pillar up with filler, place every listed cell now within reach, then remove the pillar. */
-export async function towerPlace(ctx, target, cells) {
+/**
+ * Walk to `spot` and pillar up `h` blocks with filler (dirt or cobblestone). Every block placed is
+ * recorded in state.tower straight away, so the pillar is always removed afterwards: by the task
+ * itself, or by the agent's very next decision if the task was interrupted.
+ */
+export async function pillarUp(ctx, spot) {
   const { bot, state } = ctx;
-  const origin = buildOrigin(bot);
-  const spot = pillarSpot(bot, origin, toVec(target));
-  if (!spot) throw new Error(`Nowhere to pillar up to ${toVec(target)}`);
   if (total(counts(bot), 'filler') < spot.h) throw new Error(`Need ${spot.h} dirt for a pillar`);
   await go(ctx, new GoalBlock(spot.p.x, spot.p.y, spot.p.z), 25000);
-
   state.tower = state.tower || [];
   for (let i = 0; i < spot.h; i++) {
     const filler = findItem(bot, 'filler');
     if (!filler) break;
-    await bot.equip(filler, 'hand');
     const feet = bot.entity.position.floored();
+    // Clear leaves we are about to climb into.
+    const overhead = bot.blockAt(feet.offset(0, 2, 0));
+    if (overhead && /leaves$/.test(overhead.name)) await dig(ctx, overhead.position, { collect: false, approach: false });
+    await bot.equip(filler, 'hand');
     await bot.look(bot.entity.yaw, -Math.PI / 2, true);
     bot.setControlState('jump', true);
     await waitFor(() => bot.entity.position.y >= feet.y + 1.05, 1500);
@@ -567,21 +573,64 @@ export async function towerPlace(ctx, target, cells) {
     await waitFor(() => bot.entity.onGround, 1500);
     check(ctx);
   }
+}
 
-  // Place every listed cell now within reach that we have material for, lowest first.
+/** Pillar up beside the house, place every listed cell now within reach, then remove the pillar. */
+export async function towerPlace(ctx, target, cells) {
+  const { bot } = ctx;
+  const origin = buildOrigin(bot);
+  const spot = pillarSpot(bot, toVec(target), { minY: origin.y - 1, maxY: origin.y + 2 });
+  if (!spot) throw new Error(`Nowhere to pillar up to ${toVec(target)}`);
   let placed = 0;
-  for (const cell of [...cells].sort((a, b) => a.y - b.y)) {
-    const pos = toVec(cell);
-    if (!isEmpty(bot.blockAt(pos)?.name ?? 'stone') || eyeOf(bot).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.5) continue;
-    const item = findItem(bot, cell.material);
-    const reference = referenceFor(bot, pos, false);
-    if (!item || !reference) continue;
-    try { await bot.equip(item, 'hand'); await placeFacing(ctx, reference, cell.facing); placed++; }
-    catch (error) { ctx.log(`Pillar placement at ${pos} failed: ${error.message}`); }
-    check(ctx);
+  try {
+    await pillarUp(ctx, spot);
+    // Place every listed cell now within reach that we have material for, lowest first.
+    for (const cell of [...cells].sort((a, b) => a.y - b.y)) {
+      const pos = toVec(cell);
+      if (!isEmpty(bot.blockAt(pos)?.name ?? 'stone') || eyeOf(bot).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.5) continue;
+      const item = findItem(bot, cell.material);
+      const reference = referenceFor(bot, pos, false);
+      if (!item || !reference) continue;
+      try { await bot.equip(item, 'hand'); await placeFacing(ctx, reference, cell.facing); placed++; }
+      catch (error) { ctx.log(`Pillar placement at ${pos} failed: ${error.message}`); }
+      check(ctx);
+    }
+  } finally {
+    if (ctx.alive()) await dismantleTower(ctx);
   }
-  await dismantleTower(ctx);
   return placed;
+}
+
+/**
+ * Pillar up beside a tall tree, chop every log of the same kind within reach (top first, so
+ * nothing is left floating), take the pillar down, then collect the logs that fell.
+ */
+export async function towerChop(ctx, target) {
+  const { bot } = ctx;
+  const log = toVec(target);
+  const kind = bot.blockAt(log)?.name;
+  if (!kind || !isLog(kind)) return false;
+  const ground = bot.entity.position.floored().y;
+  const spot = pillarSpot(bot, log, { minY: Math.min(ground, log.y) - 3, maxY: log.y });
+  if (!spot) throw new Error(`Nowhere to pillar up to the tree at ${log}`);
+  let chopped = 0;
+  try {
+    await pillarUp(ctx, spot);
+    const eye = eyeOf(bot);
+    const reachable = [];
+    for (let dx = -3; dx <= 3; dx++) for (let dy = -4; dy <= 5; dy++) for (let dz = -3; dz <= 3; dz++) {
+      const b = bot.blockAt(eye.floored().offset(dx, dy, dz));
+      if (b && b.name === kind && eye.distanceTo(b.position.offset(0.5, 0.5, 0.5)) <= 4.4 && !isProtected(bot, b.position)) reachable.push(b.position);
+    }
+    for (const pos of reachable.sort((a, b) => b.y - a.y)) {
+      try { if (await dig(ctx, pos, { collect: false, approach: false })) chopped++; }
+      catch (error) { if (error instanceof Cancelled) throw error; }
+    }
+  } finally {
+    if (ctx.alive()) await dismantleTower(ctx);
+  }
+  await collectDrops(ctx, new Vec3(log.x, spot.p.y, log.z), 7);
+  return chopped;
 }
 
 /** Dig out pillar blocks from the top down (also used to clean up after an interrupted pillar). */
@@ -606,13 +655,14 @@ export const actions = {
   wait: (ctx, a) => wait(a.ms ?? 3000),
   done: () => wait(5000),
   travel: (ctx, a) => travel(ctx, a.target, a.range ?? 3),
-  explore: (ctx, a) => explore(ctx, a.angle, a.distance),
+  explore: (ctx, a) => explore(ctx, a.angle, a.distance, undefined, a.range),
   mine: (ctx, a) => dig(ctx, a.target),
   chop: (ctx, a) => chop(ctx, a.target),
   // Builders leave cleared drops where they fall rather than walking into the footprint.
   clear: (ctx, a) => dig(ctx, a.target, { collect: false }),
   place: (ctx, a) => placeAt(ctx, a.target, a.group, a.target.facing),
   tower_place: (ctx, a) => towerPlace(ctx, a.target, a.cells),
+  tower_chop: (ctx, a) => towerChop(ctx, a.target),
   dismantle: ctx => dismantleTower(ctx),
   craft_tool: (ctx, a) => craftTool(ctx, a.item),
   craft_planks: (ctx, a) => convertLogs(ctx, a.count, a.wood),

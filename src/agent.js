@@ -134,6 +134,9 @@ function connect() {
     currentTask = state.running ? 'Starting work' : 'Paused — ready to start';
     const movements = new Movements(bot);
     movements.allow1by1towers = false;
+    // No untracked scaffolding while walking: the only blocks a bot places outside the house are
+    // its own recorded pillars, which it always removes again.
+    movements.scafoldingBlocks = [];
     movements.allowParkour = false;
     movements.allowSprinting = true;
     movements.maxDropDown = 2;
@@ -201,7 +204,9 @@ async function work() {
     for (const [kind, field] of [['Wood', 'tree'], ['Stone', 'stone'], ['Sand', 'sand']]) {
       if (view[field]) reportOnce(ctx, kind, view[field]);
     }
-    action = perceiveSurvival(ctx) || await adapt(ctx,view,role.decide(view));decisions++;
+    // Any bot that left a temporary pillar standing (e.g. interrupted mid-task) removes it first.
+    action = state.tower?.length ? { type: 'dismantle', say: 'Removing my temporary pillar' }
+      : perceiveSurvival(ctx) || await adapt(ctx,view,role.decide(view));decisions++;
     if(action.localGoal==='sand')memory.gatheringSand=true;
     memory.movements.allowSprinting = bot.food>16 && bot.health>10;
     // Every role may clear a blocked route, but the house and utilities remain protected.

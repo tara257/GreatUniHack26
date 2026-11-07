@@ -61,7 +61,7 @@ export function findTargets(ctx, test, { maxDistance = 32, count = 64, protect =
  * Nearest location of a resource kind that this agent saw earlier or was told about.
  * If we are standing at such a location and see nothing, it is marked exhausted locally.
  */
-export function rememberedTarget(ctx, kind, seeingAny) {
+export function rememberedTarget(ctx, kind, seeingAny, range = HOME_RANGE) {
   const { bot, state, save } = ctx;
   const me = bot.entity.position;
   let locations = knownLocations(state, kind);
@@ -73,7 +73,7 @@ export function rememberedTarget(ctx, kind, seeingAny) {
   }
   // Recently failed places are already filtered out above; also ignore anything too far from home.
   const home = storageAnchor(bot);
-  return nearest(me, locations.filter(p => toVec(p).distanceTo(home) <= HOME_RANGE));
+  return nearest(me, locations.filter(p => toVec(p).distanceTo(home) <= range));
 }
 
 /** Publish a resource sighting once per 16-block region, so chat is not flooded with nearby duplicates. */

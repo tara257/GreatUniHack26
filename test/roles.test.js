@@ -177,3 +177,18 @@ test('a builder holding materials it cannot place yet returns them, so the craft
   assert.equal(giveBack.type, 'deposit');
   assert.deepEqual(['oak_log', 'oak_fence', 'oak_door', 'cobblestone'].map(giveBack.keep), [0, 0, 0, 999]);
 });
+
+test('lumberjack pillars up for tall oaks, digging dirt first, and ranges further for oak', () => {
+  const tall = P(5, 72, 5);
+  assert.equal(lumberjack.decide(base({ tallTree: tall, fillerTarget: P(2, 63, 2) })).type, 'mine');
+  const chop = lumberjack.decide(base({ tallTree: tall, inv: { dirt: lumberjack.PILLAR_DIRT } }));
+  assert.deepEqual([chop.type, chop.target], ['tower_chop', tall]);
+  // A reachable trunk is still preferred over pillaring.
+  assert.equal(lumberjack.decide(base({ tree: P(1, 64, 1), tallTree: tall, inv: { dirt: 6 } })).type, 'chop');
+  const explore = lumberjack.decide(base({}));
+  assert.deepEqual([explore.type, explore.range], ['explore', lumberjack.WOOD_RANGE]);
+  assert.ok(lumberjack.WOOD_RANGE > 96);
+  // Dirt for the next pillar is kept back when delivering.
+  assert.equal(lumberjack.lumberjackKeep('dirt'), lumberjack.PILLAR_DIRT);
+  assert.equal(lumberjack.lumberjackKeep('oak_log'), 0);
+});
