@@ -1,8 +1,12 @@
 // Stage the demo: find flat open ground near spawn, move the world spawn there (storage and the
 // house follow it), dress the bots so their roles are recognisable, and teleport everyone over.
-// Usage: npm run stage                 (search near the current spawn)
-//        npm run stage -- 120 70 -40   (use these coordinates as the new spawn instead)
+// Usage: npm run stage                         (search near the current spawn)
+//        npm run stage -- 120 70 -40           (use these coordinates as the new spawn instead)
+//        npm run stage -- biome cherry_grove   (find that biome anywhere and search there;
+//                                               several names = try each in order)
 import mineflayer from 'mineflayer';
+import { readFileSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import vec3Module from 'vec3';
 import { sendCommands } from './cmd.js';
 import { ROSTER } from '../src/roster.js';
@@ -11,8 +15,9 @@ import { isSoft } from '../src/items.js';
 const { Vec3 } = vec3Module;
 const PLAYER = process.env.PLAYER_NAME || 'b_caul';
 const SEARCH_RADIUS = 56;
-// Ground that must be level and open: storage corner (±4 around spawn) plus the house (x 5..11, z -3..4).
-const AREA = { minX: -4, maxX: 11, minZ: -4, maxZ: 5 };
+// Ground that must be level and open: the house footprint with a one-block margin (x 5..11, z -3..4)
+// and a small patch at spawn for the storage chest and crafting table.
+const AREAS = [{ minX: 5, maxX: 11, minZ: -3, maxZ: 4 }, { minX: -1, maxX: 1, minZ: -1, maxZ: 1 }];
 
 // Outfits: dyed leather pieces (or a vanilla helmet) so each role reads at a glance.
 const OUTFITS = {
@@ -39,7 +44,24 @@ function outfitCommands() {
   return commands;
 }
 
-function surveyorFindsSite() {
+const logPath = fileURLToPath(new URL('../.server/logs/latest.log', import.meta.url));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** Ask the server where the nearest biome of a kind is, and read the answer from its log. */
+async function locateBiome(biome) {
+  const start = statSync(logPath).size;
+  sendCommands([`locate biome minecraft:${biome}`]);
+  for (let i = 0; i < 120; i++) {
+    await sleep(500);
+    const text = readFileSync(logPath, 'utf8').slice(start);
+    const found = /The nearest minecraft:\w+ is at \[(-?\d+), (?:~|-?\d+), (-?\d+)\]/.exec(text);
+    if (found) return { x: Number(found[1]), z: Number(found[2]) };
+    if (/Could not find|Unknown|Incorrect/.test(text)) return null;
+  }
+  return null;
+}
+
+function surveyorFindsSite({ centre = null, biome = null } = {}) {
   return new Promise((resolve, reject) => {
     const bot = mineflayer.createBot({ host: '127.0.0.1', port: Number(process.env.MC_PORT || 25565),
       username: 'Site_Surveyor', version: process.env.MC_VERSION || '1.21.1', auth: 'offline' });
@@ -48,17 +70,23 @@ function surveyorFindsSite() {
     bot.once('kicked', reason => fail(new Error(`Kicked: ${JSON.stringify(reason)}`)));
     bot.once('spawn', async () => {
       try {
+        if (centre) {
+          // Fly over as a spectator so the surveyor can look at faraway terrain without falling.
+          sendCommands([`gamemode spectator Site_Surveyor`, `tp Site_Surveyor ${centre.x} 200 ${centre.z}`]);
+          for (let i = 0; i < 60 && bot.entity.position.distanceTo(new Vec3(centre.x, 200, centre.z)) > 4; i++) await sleep(500);
+          await sleep(4000); // let the new chunks generate and arrive
+        }
         await bot.waitForChunksToLoad();
-        await new Promise(r => setTimeout(r, 1500));
-        resolve(findFlatSite(bot));
+        await sleep(1500);
+        resolve(findFlatSite(bot, { biome, deep: !!centre }));
       } catch (error) { reject(error); } finally { bot.quit(); }
     });
   });
 }
 
 /** Height and kind of the top solid block in each column, ignoring plants. */
-function surfaceOf(bot, x, z, top) {
-  for (let y = top; y > top - 80; y--) {
+function surfaceOf(bot, x, z, top, depth = 80) {
+  for (let y = top; y > top - depth; y--) {
     const block = bot.blockAt(new Vec3(x, y, z));
     if (!block) return null;
     if (block.name === 'air' || block.name === 'cave_air') continue;
@@ -71,41 +99,65 @@ function surfaceOf(bot, x, z, top) {
   return null;
 }
 
-function findFlatSite(bot) {
+function findFlatSite(bot, { biome = null, deep = false } = {}) {
   const centre = bot.entity.position.floored();
-  const top = Math.min(centre.y + 40, 300);
+  // Surveying from the sky: scan the whole height range of normal terrain.
+  const top = deep ? 200 : Math.min(centre.y + 40, 300);
+  const depth = deep ? 150 : 80;
   const cache = new Map();
   const at = (x, z) => {
     const key = `${x},${z}`;
-    if (!cache.has(key)) cache.set(key, surfaceOf(bot, x, z, top));
+    if (!cache.has(key)) cache.set(key, surfaceOf(bot, x, z, top, depth));
     return cache.get(key);
   };
   let best = null;
+  const why = { unloaded: 0, notGround: 0, uneven: 0, otherBiome: 0, fewTrees: 0 };
+  const biomes = new Set();
   for (let dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx += 3) for (let dz = -SEARCH_RADIUS; dz <= SEARCH_RADIUS; dz += 3) {
     const ax = centre.x + dx, az = centre.z + dz;
     let min = Infinity, max = -Infinity, ok = true;
-    for (let x = AREA.minX; x <= AREA.maxX && ok; x++) for (let z = AREA.minZ; z <= AREA.maxZ; z++) {
+    for (const area of AREAS) for (let x = area.minX; x <= area.maxX && ok; x++) for (let z = area.minZ; z <= area.maxZ; z++) {
       const s = at(ax + x, az + z);
-      if (!s || s.kind !== 'ground') { ok = false; break; }
+      if (!s) { why.unloaded++; ok = false; break; }
+      if (s.kind !== 'ground') { why.notGround++; ok = false; break; }
       min = Math.min(min, s.y); max = Math.max(max, s.y);
     }
-    if (!ok || max - min > 1) continue;
+    if (!ok) continue;
+    if (max - min > 1) { why.uneven++; continue; }
+    // The house itself must stand in the requested biome.
+    const b = bot.blockAt(new Vec3(ax + 8, max + 1, az))?.biome;
+    const here = b?.name || bot.registry.biomes?.[b?.id]?.name;
+    biomes.add(here);
+    if (biome && here !== biome) { why.otherBiome++; continue; }
     // Trees within reach keep the lumberjack busy; count canopy columns in a 24-block ring.
     let trees = 0;
     for (let x = -24; x <= 24; x += 2) for (let z = -24; z <= 24; z += 2) if (at(ax + x, az + z)?.kind === 'tree') trees++;
-    if (trees < 6) continue;
+    if (trees < 6) { why.fewTrees++; continue; }
     const score = (max - min) * 10 + Math.hypot(dx, dz) / 10 - Math.min(trees, 40) / 8;
     if (!best || score < best.score) best = { x: ax, y: max + 1, z: az, score, flatness: max - min, trees };
   }
-  if (!best) throw new Error('No flat open area with nearby trees found near spawn. Pass coordinates instead: npm run stage -- x y z');
+  if (!best) throw new Error(`No flat open area with nearby trees found around ${centre.x}, ${centre.z}. Rejected spots: ${JSON.stringify(why)}; biomes on flat ground: ${[...biomes].join(', ') || 'none'}`);
   return best;
 }
 
-const coords = process.argv.slice(2).map(Number);
-const site = coords.length === 3 && coords.every(Number.isInteger)
-  ? { x: coords[0], y: coords[1], z: coords[2] }
-  : await surveyorFindsSite();
-console.log(`New spawn: ${site.x} ${site.y} ${site.z}${site.trees ? ` (height variation ${site.flatness}, ${site.trees} tree columns nearby)` : ''}`);
+const args = process.argv.slice(2);
+const coords = args.map(Number);
+let site;
+if (args[0] === 'biome') {
+  for (const biome of args.slice(1)) {
+    const centre = await locateBiome(biome);
+    if (!centre) { console.log(`No ${biome} found.`); continue; }
+    console.log(`Nearest ${biome} is around ${centre.x}, ${centre.z}; surveying it...`);
+    try { site = { ...(await surveyorFindsSite({ centre, biome })), biome }; break; }
+    catch (error) { console.log(`  ${error.message}`); }
+  }
+  if (!site) { console.error('None of those biomes had a usable flat site.'); process.exit(1); }
+} else if (coords.length === 3 && coords.every(Number.isInteger)) {
+  site = { x: coords[0], y: coords[1], z: coords[2] };
+} else {
+  site = await surveyorFindsSite();
+}
+console.log(`New spawn: ${site.x} ${site.y} ${site.z}${site.biome ? ` in ${site.biome}` : ''}${site.trees ? ` (height variation ${site.flatness}, ${site.trees} tree columns nearby)` : ''}`);
 
 const { x, y, z } = site;
 sendCommands([
