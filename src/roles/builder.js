@@ -2,7 +2,7 @@
 import { total } from '../items.js';
 import { requirements, cellKey } from '../blueprint.js';
 import { baseView, siteView, findTargets } from './common.js';
-import { free, outstanding, nextPlacement, fetchFromStorage, houseComplete, craftFromCarried, isHigh, BUILD_ITEMS } from './construction.js';
+import { free, outstanding, nextPlacement, fetchFromStorage, houseComplete, craftFromCarried, isHigh, BUILD_ITEMS, placeableMaterials, handOver } from './construction.js';
 import { MAX_PILLAR } from '../skills.js';
 
 const ROOF_Y = 3; // cells from this height up get a pillar if walking to them failed
@@ -67,9 +67,13 @@ function choose(v) {
   const craft = craftFromCarried(v);
   if (craft) return craft;
 
-  // 5. Fetch outstanding materials from storage when it might have them.
-  const fetch = fetchFromStorage(v);
+  // 5. Fetch only materials we can place right now, and put back what we can't use yet, so storage
+  //    (all that the crafter and helpers can see) reflects what the team really has.
+  const placeableNow = placeableMaterials(v, { includeHigh: true });
+  const fetch = fetchFromStorage(v, placeableNow);
   if (fetch) return fetch;
+  const giveBack = handOver(v, placeableNow, 'Returning materials I cannot place yet to storage');
+  if (giveBack) return giveBack;
 
   const list = Object.entries(need).filter(([g]) => g !== 'filler').map(([g, n]) => `${n} ${g.replace('oak_', '')}`).join(', ');
   return { type: 'wait', ms: 4000, say: list ? `Waiting for materials: ${list}` : 'Waiting for a reachable position to build' };

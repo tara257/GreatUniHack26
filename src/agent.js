@@ -10,7 +10,7 @@ import { MinecraftChannel } from './comms/minecraft-channel.js';
 import { ROSTER, TEAM_NAMES } from './roster.js';
 import { run, Cancelled } from './skills.js';
 import { isProtected } from './world.js';
-import { reportOnce, keyOf } from './roles/common.js';
+import { reportOnce, failureKey } from './roles/common.js';
 import { observeHouse } from './house-telemetry.js';
 
 const { pathfinder, Movements, goals: { GoalNear } } = pathfinderModule;
@@ -194,7 +194,7 @@ async function work() {
     if (error instanceof Cancelled || !ctx.alive()) return;
     log(`Replanning after ${action?.type ?? 'perception'}: ${error.message}`);
     // Avoid retrying the same target immediately; other options get a turn.
-    if (action?.target) memory.failed.set(keyOf(action.target), Date.now() + 30000);
+    if (action) memory.failed.set(failureKey(action), Date.now() + 30000);
     if (action && ['deposit', 'withdraw', 'inspect_storage'].includes(action.type)) memory.storage = { contents: {}, at: Date.now() };
   } finally {
     if (activeTask === task) activeTask = null;

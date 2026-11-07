@@ -24,8 +24,11 @@ test('miner without a pickaxe bootstraps one from wood', () => {
 test('miner mines, upgrades its pickaxe and deposits at the threshold', () => {
   const stone = P(3, 60, 3);
   assert.equal(miner.decide(base({ inv: { wooden_pickaxe: 1, oak_planks: 1 }, stone })).type, 'mine');
-  const upgrade = miner.decide(base({ inv: { wooden_pickaxe: 1, cobblestone: 3, stick: 2 }, tableNear: true, stone }));
+  const upgrade = miner.decide(base({ inv: { wooden_pickaxe: 1, cobblestone: 3, stick: 2 }, tableNear: true, tableClose: true, stone }));
   assert.equal(upgrade.item, 'stone_pickaxe');
+  // A table far away (back at spawn while we are down a mine) or a just-failed attempt: keep mining instead.
+  assert.equal(miner.decide(base({ inv: { wooden_pickaxe: 1, cobblestone: 3, stick: 2 }, tableNear: true, tableClose: false, stone })).type, 'mine');
+  assert.equal(miner.decide(base({ inv: { wooden_pickaxe: 1, cobblestone: 3, stick: 2 }, tableClose: true, failed: new Set(['craft_tool:stone_pickaxe']), stone })).type, 'mine');
   const deposit = miner.decide(base({ inv: { stone_pickaxe: 1, cobblestone: miner.DEPOSIT_AT }, stone }));
   assert.equal(deposit.type, 'deposit');
   assert.equal(deposit.keep('cobblestone'), 3);
@@ -64,13 +67,14 @@ test('builder clears obstructions before placing', () => {
 test('builder places held materials and moves to other tasks when one material is missing', () => {
   const place = builder.decide(builderView(flat, { inv: { cobblestone: 5 } }));
   assert.deepEqual([place.type, place.group], ['place', 'cobblestone']);
-  // Holding only a door, and the floor is not yet buildable for it: fetch the rest from storage.
+  // Nothing held: fetch only what can be placed now (floor cobblestone and the front step), not walls or roof.
   const fetch = builder.decide(builderView(flat, { inv: {} }));
   assert.equal(fetch.type, 'withdraw');
+  assert.deepEqual(fetch.wants.map(w => w.group).sort(), ['cobblestone', 'oak_stairs']);
   assert.ok(fetch.wants.some(w => w.group === 'cobblestone' && w.count === 64));
-  // Storage was just checked and has only planks: ask only for planks.
+  // Storage was just checked and has only planks, which can't be placed before the floor: don't take them.
   const planksOnly = builder.decide(builderView(flat, { storage: { contents: { oak_planks: 20 }, age: 0 } }));
-  assert.deepEqual(planksOnly.wants.map(w => w.group), ['oak_planks']);
+  assert.equal(planksOnly.type, 'wait');
   // Storage recently seen empty: wait and say what is needed.
   const wait = builder.decide(builderView(flat, { storage: { contents: {}, age: 0 } }));
   assert.equal(wait.type, 'wait');
@@ -164,4 +168,12 @@ test('helpers hand over materials they cannot place yet and fetch only what they
   assert.equal(helpBuild(builderView(flat, { distanceToSite: 80 })).type, 'travel');
   const done = builderView(flat, { report: { complete: [], missing: [], obstructed: [], supports: [], unknown: [] } });
   assert.equal(helpBuild(done).type, 'done');
+});
+
+test('a builder holding materials it cannot place yet returns them, so the crafter sees the real stock', () => {
+  // Floor not started: logs, fences and the door can't be placed; cobblestone is all it can use.
+  const view = builderView(flat, { inv: { oak_log: 18, oak_fence: 13, oak_door: 1 }, storage: { contents: {}, age: 0 } });
+  const giveBack = builder.decide(view);
+  assert.equal(giveBack.type, 'deposit');
+  assert.deepEqual(['oak_log', 'oak_fence', 'oak_door', 'cobblestone'].map(giveBack.keep), [0, 0, 0, 999]);
 });

@@ -55,6 +55,21 @@ export function craftFromCarried(v) {
   return null;
 }
 
+/** Materials of cells that can be placed now (high roof cells too, if this agent builds pillars). */
+export function placeableMaterials(v, { includeHigh = false } = {}) {
+  return new Set(v.placeable.filter(c => free(v)(c) && (includeHigh || !isHigh(v, c))).map(c => c.material));
+}
+
+/**
+ * Return house materials we hold but cannot place yet. Teammates (the crafter in particular) can
+ * only see storage, so materials sitting in our inventory look missing to them.
+ */
+export function handOver(v, placeableNow, say) {
+  const idle = Object.keys(v.inv).filter(name => BUILD_ITEMS.includes(name) && !placeableNow.has(name));
+  if (!idle.length || !v.storageExists) return null;
+  return { type: 'deposit', keep: name => (idle.includes(name) ? 0 : 999), say };
+}
+
 /**
  * What a non-builder does once the team has collected everything: place blocks it holds,
  * fetch more from storage, or stand by near the site.
@@ -65,11 +80,9 @@ export function helpBuild(v) {
   const cell = nextPlacement(v, { helper: true });
   if (cell) return { type: 'place', target: cell, group: cell.material, say: `Helping the builder: placing ${cell.material.replace('oak_', 'oak ')}` };
   // Hand over building materials we cannot place yet, so the builder can use them; fetch only what we can place now.
-  const placeableNow = new Set(v.placeable.filter(c => free(v)(c) && !isHigh(v, c)).map(c => c.material));
-  const idle = Object.keys(v.inv).filter(name => BUILD_ITEMS.includes(name) && !placeableNow.has(name));
-  if (idle.length && v.storageExists) {
-    return { type: 'deposit', keep: name => (idle.includes(name) ? 0 : 999), say: 'Helping the builder: storing materials it will need' };
-  }
+  const placeableNow = placeableMaterials(v);
+  const giveBack = handOver(v, placeableNow, 'Helping the builder: storing materials it will need');
+  if (giveBack) return giveBack;
   const fetch = fetchFromStorage(v, placeableNow);
   if (fetch) return { ...fetch, say: `Helping the builder: ${fetch.say.toLowerCase()}` };
   return { type: 'wait', ms: 4000, say: 'Standing by to help the builder' };

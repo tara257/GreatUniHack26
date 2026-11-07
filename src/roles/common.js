@@ -9,6 +9,8 @@ const HOME_RANGE = 96;
 
 export const STORAGE_STALE_MS = 20_000;
 export const keyOf = p => `${Math.floor(p.x ?? p[0])},${Math.floor(p.y ?? p[1])},${Math.floor(p.z ?? p[2])}`;
+// What to remember about a failed action: its target position, or else what it was trying to do.
+export const failureKey = action => (action.target ? keyOf(action.target) : `${action.type}:${action.item || ''}`);
 
 export function baseView(ctx) {
   const { bot, memory } = ctx;

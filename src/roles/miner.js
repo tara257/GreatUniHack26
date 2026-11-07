@@ -18,7 +18,10 @@ export function minerKeep(name) {
 
 export function perceive(ctx) {
   const v = siteView(ctx, baseView(ctx));
-  v.tableNear = !!findNearby(ctx.bot, 'crafting_table');
+  const table = findNearby(ctx.bot, 'crafting_table');
+  v.tableNear = !!table;
+  // Close enough to use without a long walk (e.g. back at storage), so an upgrade never strands it.
+  v.tableClose = !!table && table.position.distanceTo(ctx.bot.entity.position) <= 8;
   const tier = bestPickaxeTier(v.inv);
   if (tier > 0) {
     v.stone = findTargets(ctx, name => name === 'stone', { maxDistance: 24 })[0] || null;
@@ -62,7 +65,7 @@ export function decide(v) {
     return { type: 'explore', angle: v.angle, say: 'Looking for a tree to make a pickaxe' };
   }
 
-  if (tier < 2 && cobble >= 3 && wood >= 2 + tableCost) {
+  if (tier < 2 && cobble >= 3 && wood >= 2 && v.tableClose && !v.failed?.has('craft_tool:stone_pickaxe')) {
     return { type: 'craft_tool', item: 'stone_pickaxe', say: 'Upgrading to a stone pickaxe' };
   }
   if (v.stone) return { type: 'mine', target: v.stone, say: `Mining stone (${cobble}/${DEPOSIT_AT})` };
