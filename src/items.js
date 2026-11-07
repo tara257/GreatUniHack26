@@ -28,6 +28,9 @@ export const isEmpty = name => AIR.has(name) || LIQUID.has(name);
 // A block that cannot support a placed block next to it.
 export const isSoft = name => isEmpty(name) || SOFT.test(name) || name === 'short_grass' || name === 'tall_grass';
 
+// Blocks that react to a right-click (a door opens instead of a block being placed against it).
+export const isInteractive = name => /(door|trapdoor|fence_gate|chest|barrel|crafting_table|furnace|smoker|button|lever|bed|anvil|shulker_box)$/.test(name);
+
 export const PICKAXE_TIER = { wooden_pickaxe: 1, golden_pickaxe: 1, stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 5 };
 
 export function countItems(items) {

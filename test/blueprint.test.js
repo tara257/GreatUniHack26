@@ -101,3 +101,11 @@ test('progress is the percentage of required blocks placed correctly', () => {
   // An unloaded site reports nothing placed rather than guessing.
   assert.equal(progress(survey(HOUSE, origin, () => null)).percent, 0);
 });
+
+test('a door never counts as something to build against', () => {
+  // Only neighbour of this cell is a door below it: opening the door is all a right-click would do.
+  const w = world({ '102,66,200': 'oak_door' });
+  const cell = { x: 102, y: 67, z: 200, material: 'planks' };
+  const report = { missing: [cell], supports: [] };
+  assert.equal(placeable(report, origin, w.nameAt).length, 0);
+});

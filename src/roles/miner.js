@@ -1,6 +1,7 @@
 // MINER: makes its own pickaxe, mines stone, and returns cobblestone to shared storage.
 import { total, bestPickaxeTier, plankPotential, isPickaxe, isLog, isPlanks } from '../items.js';
-import { baseView, findTargets, rememberedTarget, STORAGE_STALE_MS } from './common.js';
+import { baseView, siteView, findTargets, rememberedTarget, STORAGE_STALE_MS } from './common.js';
+import { helpBuild } from './construction.js';
 import { findNearby } from '../skills.js';
 
 export const DEPOSIT_AT = Number(process.env.MINER_DEPOSIT || 32);
@@ -16,7 +17,7 @@ export function minerKeep(name) {
 }
 
 export function perceive(ctx) {
-  const v = baseView(ctx);
+  const v = siteView(ctx, baseView(ctx));
   v.tableNear = !!findNearby(ctx.bot, 'crafting_table');
   const tier = bestPickaxeTier(v.inv);
   if (tier > 0) {
@@ -41,6 +42,9 @@ export function decide(v) {
   const tier = bestPickaxeTier(v.inv);
   const wood = plankPotential(v.inv) + 2 * total(v.inv, 'stick');
   const tableCost = v.tableNear ? 0 : 4;
+
+  // Storage (as last seen) plus what we carry covers the house: stop mining and help build instead.
+  if (v.shortfall && v.shortfall.cobblestone === 0) return helpBuild(v);
 
   if (v.full || cobble >= DEPOSIT_AT) {
     if (v.storageExists || wood >= 12) return { type: 'deposit', keep: minerKeep, say: `Returning ${cobble} cobblestone to storage` };

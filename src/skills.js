@@ -1,18 +1,18 @@
 // Low-level actions an agent can carry out. Roles decide *what* to do; these do it.
 // Every action re-checks ctx.alive() after each await so pause/death/disconnect cancel promptly.
 import pathfinderModule from 'mineflayer-pathfinder';
-import { GROUPS, isEmpty, isSoft, isLog, countItems, total, planksFor, dominantWood } from './items.js';
+import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, planksFor, dominantWood } from './items.js';
 import { HOUSE, insideFootprint } from './blueprint.js';
 import { Vec3, toVec, storageAnchor, storageChests, buildOrigin } from './world.js';
 
 const { goals } = pathfinderModule;
-const { Goal, GoalNear, GoalXZ, GoalLookAtBlock, GoalPlaceBlock } = goals;
+const { Goal, GoalNear, GoalXZ, GoalBlock, GoalLookAtBlock, GoalPlaceBlock } = goals;
 
 export class Cancelled extends Error {}
 
 const FACES = [[0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0], [0, 0, -1], [0, 0, 1]].map(f => new Vec3(...f));
 
-/** Wrap a goal so the agent never ends up standing inside the house footprint (it could wall itself in). */
+/** Wrap a goal so the agent ends up standing outside the house footprint (used for the door, so nobody shuts themselves in). */
 class OutsideHouse extends Goal {
   constructor(inner, origin) { super(); this.inner = inner; this.origin = origin; }
   heuristic(node) { return this.inner.heuristic(node); }
@@ -29,7 +29,6 @@ export async function go(ctx, goal, ms = 20000) {
   check(ctx);
 }
 
-const outside = (ctx, goal) => ctx.role === 'builder' ? new OutsideHouse(goal, buildOrigin(ctx.bot)) : goal;
 export const counts = bot => countItems(bot.inventory.items());
 const findItem = (bot, group) => bot.inventory.items().find(item => (GROUPS[group] ? GROUPS[group](item.name) : item.name === group));
 const itemId = (bot, name) => {
@@ -42,7 +41,7 @@ const itemId = (bot, name) => {
 
 export async function travel(ctx, target, range = 3, ms = 25000) {
   const p = toVec(target);
-  await go(ctx, outside(ctx, new GoalNear(p.x, p.y, p.z, range)), ms);
+  await go(ctx, new GoalNear(p.x, p.y, p.z, range), ms);
 }
 
 export async function explore(ctx, angle, distance = 16, ms = 15000) {
@@ -71,7 +70,7 @@ export async function dig(ctx, target, { collect = true, approach = true } = {})
   let block = bot.blockAt(pos);
   if (!block || isEmpty(block.name)) return false;
   if (approach && !bot.canDigBlock(block)) {
-    await go(ctx, outside(ctx, new GoalLookAtBlock(pos, bot.world, { reach: 4.4 })), 20000);
+    await go(ctx, new GoalLookAtBlock(pos, bot.world, { reach: 4.4 }), 20000);
     block = bot.blockAt(pos);
     if (!block || isEmpty(block.name)) return false;
   }
@@ -104,7 +103,7 @@ export async function chop(ctx, target) {
 function referenceFor(bot, pos, doorLike) {
   for (const face of doorLike ? [FACES[0]] : FACES) {
     const ref = bot.blockAt(pos.plus(face));
-    if (ref && !isSoft(ref.name)) return { ref, face: face.scaled(-1) };
+    if (ref && !isSoft(ref.name) && !isInteractive(ref.name)) return { ref, face: face.scaled(-1) };
   }
   return null;
 }
@@ -118,7 +117,11 @@ export async function placeAt(ctx, target, group) {
   const doorLike = GROUPS.door(item.name);
   if (!referenceFor(bot, pos, doorLike)) throw new Error(`Nothing to attach ${group} to at ${pos}`);
   const faces = doorLike ? [FACES[0]] : undefined;
-  await go(ctx, outside(ctx, new GoalPlaceBlock(pos, bot.world, { range: 4.4, faces })), 20000);
+  // No line-of-sight requirement: the server only checks reach, so roof blocks can be placed
+  // against the top of a wall from below or from inside the house.
+  const goal = new GoalPlaceBlock(pos, bot.world, { range: 4.4, LOS: false, faces });
+  // The door is fitted from outside so the agent is never shut in.
+  await go(ctx, doorLike ? new OutsideHouse(goal, buildOrigin(bot)) : goal, 20000);
   const current = bot.blockAt(pos);
   if (!current || !isEmpty(current.name)) return false;
   const reference = referenceFor(bot, pos, doorLike);
@@ -394,6 +397,84 @@ export async function smelt(ctx, input, count) {
   } finally { furnace.close(); ctx.memory.window = null; }
 }
 
+// ── Temporary pillar for out-of-reach roof blocks ───────────────────────────
+
+const waitFor = async (condition, ms) => {
+  const end = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > end) return false;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  return true;
+};
+const eyeOf = bot => bot.entity.position.offset(0, 1.62, 0);
+
+/** Stand just outside the house near `target`, pillar up with filler, place reachable roof cells, then remove the pillar. */
+export async function towerPlace(ctx, target, cells, height = 2) {
+  const { bot, state } = ctx;
+  const origin = buildOrigin(bot);
+  const goal = toVec(target);
+  // Open ground outside the footprint, closest to the target column.
+  const spots = [];
+  for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) {
+    for (const y of [origin.y - 1, origin.y, origin.y + 1]) {
+      const p = new Vec3(goal.x + dx, y, goal.z + dz);
+      if (insideFootprint(HOUSE, origin, p)) continue;
+      const below = bot.blockAt(p.offset(0, -1, 0));
+      const clear = [0, 1, 2, 3].every(h => bot.blockAt(p.offset(0, h, 0))?.name === 'air');
+      if (below && !isSoft(below.name) && clear) { spots.push(p); break; }
+    }
+  }
+  spots.sort((a, b) => Math.hypot(a.x - goal.x, a.z - goal.z) - Math.hypot(b.x - goal.x, b.z - goal.z));
+  if (!spots.length) throw new Error('No open ground beside the house for a pillar');
+  await go(ctx, new GoalBlock(spots[0].x, spots[0].y, spots[0].z), 20000);
+
+  state.tower = state.tower || [];
+  for (let i = 0; i < height; i++) {
+    const filler = findItem(bot, 'filler');
+    if (!filler) break;
+    await bot.equip(filler, 'hand');
+    const feet = bot.entity.position.floored();
+    await bot.look(bot.entity.yaw, -Math.PI / 2, true);
+    bot.setControlState('jump', true);
+    await waitFor(() => bot.entity.position.y >= feet.y + 1.05, 1500);
+    try { await bot.placeBlock(bot.blockAt(feet.offset(0, -1, 0)), new Vec3(0, 1, 0)); }
+    finally { bot.setControlState('jump', false); }
+    state.tower.push([feet.x, feet.y, feet.z]);
+    ctx.save();
+    await waitFor(() => bot.entity.onGround, 1500);
+    check(ctx);
+  }
+
+  // Place every listed roof cell now within reach that we have material for.
+  let placed = 0;
+  for (const cell of cells) {
+    const pos = toVec(cell);
+    if (!isEmpty(bot.blockAt(pos)?.name ?? 'stone') || eyeOf(bot).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.5) continue;
+    const item = findItem(bot, cell.material);
+    const reference = referenceFor(bot, pos, false);
+    if (!item || !reference) continue;
+    try { await bot.equip(item, 'hand'); await bot.placeBlock(reference.ref, reference.face); placed++; }
+    catch (error) { ctx.log(`Pillar placement at ${pos} failed: ${error.message}`); }
+    check(ctx);
+  }
+  await dismantleTower(ctx);
+  return placed;
+}
+
+/** Dig out pillar blocks from the top down (also used to clean up after an interrupted pillar). */
+export async function dismantleTower(ctx) {
+  const { bot, state } = ctx;
+  while (state.tower?.length) {
+    const top = toVec(state.tower[state.tower.length - 1]);
+    const block = bot.blockAt(top);
+    if (block && !isEmpty(block.name)) await dig(ctx, top, { collect: true });
+    state.tower.pop();
+    ctx.save();
+    await waitFor(() => bot.entity.onGround, 1500);
+  }
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -409,6 +490,8 @@ export const actions = {
   // Builders leave cleared drops where they fall rather than walking into the footprint.
   clear: (ctx, a) => dig(ctx, a.target, { collect: false }),
   place: (ctx, a) => placeAt(ctx, a.target, a.group),
+  tower_place: (ctx, a) => towerPlace(ctx, a.target, a.cells),
+  dismantle: ctx => dismantleTower(ctx),
   craft_tool: (ctx, a) => craftTool(ctx, a.item),
   craft_planks: (ctx, a) => convertLogs(ctx, a.count),
   inspect_storage: ctx => inspectStorage(ctx),

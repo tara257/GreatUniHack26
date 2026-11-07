@@ -3,7 +3,8 @@
 import pathfinderModule from 'mineflayer-pathfinder';
 import { isLog } from '../items.js';
 import { storageAnchor } from '../world.js';
-import { baseView, findTargets, reportOnce } from './common.js';
+import { baseView, siteView, findTargets, reportOnce } from './common.js';
+import { helpBuild } from './construction.js';
 import { go } from '../skills.js';
 
 const { goals: { GoalXZ } } = pathfinderModule;
@@ -33,8 +34,11 @@ export function waypointOffset(step, spacing = SPACING, maxRing = MAX_RING) {
   return { x: x * spacing, z: z * spacing };
 }
 
+// How often the scout returns to check whether the team has gathered everything.
+export const STORAGE_CHECK_MS = 180_000;
+
 export function perceive(ctx) {
-  const v = baseView(ctx);
+  const v = siteView(ctx, baseView(ctx));
   v.sightings = [];
   for (const resource of RESOURCES) {
     const found = findTargets(ctx, resource.test, { maxDistance: 32, count: 16, protect: false, exposed: resource.exposed })[0];
@@ -50,6 +54,8 @@ export function perceive(ctx) {
 
 export function decide(v) {
   if (v.lowHealth) return { type: 'rest', say: 'Low health; resting' };
+  if (v.shortfall && v.shortfall.cobblestone === 0 && v.shortfall.wood === 0) return helpBuild(v);
+  if (v.storageExists && (!v.storage || v.storage.age > STORAGE_CHECK_MS)) return { type: 'inspect_storage', say: 'Checking storage to see if the team still needs resources' };
   const fresh = v.sightings.find(s => !v.reported.has(regionOf(s.kind, s.position)));
   if (fresh) return { type: 'announce', kind: fresh.kind, target: fresh.position, say: `Found ${fresh.kind.toLowerCase()} at ${fresh.position.x} ${fresh.position.y} ${fresh.position.z}` };
   return { type: 'scout_move', waypoint: v.waypoint, say: `Exploring waypoint ${v.step + 1} at ${v.waypoint.x}, ${v.waypoint.z}` };

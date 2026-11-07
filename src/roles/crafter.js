@@ -1,31 +1,20 @@
 // CRAFTER: works out which house components are still missing and crafts them from shared storage.
 import { total, subtract } from '../items.js';
-import { HOUSE, survey, requirements } from '../blueprint.js';
-import { buildOrigin, Vec3 } from '../world.js';
-import { baseView, findTargets, rememberedTarget, STORAGE_STALE_MS } from './common.js';
-import { findNearby, withdraw, deposit, craft, craftWooden, convertLogs, smelt, counts } from '../skills.js';
+import { merge } from '../plan.js';
+import { baseView, siteView, findTargets, rememberedTarget, STORAGE_STALE_MS } from './common.js';
+import { helpBuild } from './construction.js';
+import { withdraw, deposit, craft, craftWooden, convertLogs, smelt, counts } from '../skills.js';
 
 // Components in the order they matter: the door and windows close the house, stairs are cosmetic.
 export const PRIORITY = ['door', 'glass_pane', 'stairs', 'planks'];
 
 export function perceive(ctx) {
-  const { bot } = ctx;
-  const v = baseView(ctx);
-  const origin = buildOrigin(bot);
-  const report = survey(HOUSE, origin, (x, y, z) => bot.blockAt(new Vec3(x, y, z))?.name ?? null);
-  // Unloaded cells are assumed still needed.
-  v.need = requirements([...report.missing, ...report.unknown]);
-  v.furnaceNear = !!findNearby(bot, 'furnace');
+  const v = siteView(ctx, baseView(ctx));
+  v.need = v.siteNeed;
   v.sand = findTargets(ctx, name => name === 'sand', { maxDistance: 32, exposed: true })[0] || null;
   v.knownSand = v.sand ? null : rememberedTarget(ctx, 'Sand', false);
   return v;
 }
-
-const merge = (a, b) => {
-  const out = { ...a };
-  for (const [k, n] of Object.entries(b)) out[k] = (out[k] || 0) + n;
-  return out;
-};
 
 export function decide(v) {
   if (v.lowHealth) return { type: 'rest', say: 'Low health; resting' };
@@ -72,6 +61,8 @@ export function decide(v) {
       return { type: 'make', item: 'planks', count, inputs: [{ group: 'log', count: Math.ceil(count / 4) }], say: `Converting spare logs into ${count} planks` };
     }
   }
+  // Nothing to craft right now: help place blocks rather than stand idle.
+  if (v.report) return helpBuild(v);
   const blocked = PRIORITY.filter(c => short[c]);
   return { type: 'wait', ms: 5000, say: blocked.length ? `Cannot craft ${blocked.join(', ')} yet; waiting for materials` : 'All craftable components are stocked' };
 }

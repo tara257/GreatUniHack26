@@ -96,6 +96,7 @@ function connect() {
     movements.allow1by1towers = false;
     movements.allowParkour = false;
     movements.allowSprinting = true;
+    movements.canOpenDoors = true; // so nobody is shut inside the finished house
     for (const block of ['chest', 'barrel', 'crafting_table', 'furnace']) {
       const id = bot.registry.blocksByName[block]?.id;
       if (id != null) movements.blocksCantBreak.add(id);

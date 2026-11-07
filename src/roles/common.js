@@ -1,6 +1,8 @@
 // Perception helpers shared by roles. These read the bot; decisions stay in each role's pure decide().
 import { countItems } from '../items.js';
-import { storageChests, isDangerous, isProtected, knownLocations, markExhausted, nearest, toVec } from '../world.js';
+import { HOUSE, survey, placeable, requirements, progress } from '../blueprint.js';
+import { merge, rawShortfall } from '../plan.js';
+import { storageChests, isDangerous, isProtected, knownLocations, markExhausted, nearest, toVec, buildOrigin, Vec3 } from '../world.js';
 
 export const STORAGE_STALE_MS = 20_000;
 export const keyOf = p => `${Math.floor(p.x ?? p[0])},${Math.floor(p.y ?? p[1])},${Math.floor(p.z ?? p[2])}`;
@@ -73,4 +75,31 @@ export function reportOnce(ctx, kind, position) {
   ctx.state.reported = [...ctx.state.reported, region].slice(-256);
   ctx.publish(kind, p);
   return true;
+}
+
+/**
+ * What this agent can see of the house site: blueprint survey, buildable cells, progress,
+ * and how much raw material it believes the team still has to collect.
+ */
+export function siteView(ctx, v) {
+  const { bot } = ctx;
+  const origin = buildOrigin(bot);
+  const nameAt = (x, y, z) => bot.blockAt(new Vec3(x, y, z))?.name ?? null;
+  v.origin = origin;
+  v.report = survey(HOUSE, origin, nameAt);
+  v.siteLoaded = v.report.unknown.length === 0;
+  v.placeable = v.siteLoaded ? placeable(v.report, origin, nameAt) : [];
+  v.progress = progress(v.report);
+  v.failed = activeFailures(ctx.memory);
+  v.distanceToSite = bot.entity.position.distanceTo(origin.offset(2, 0, 2));
+  // Unloaded cells are assumed still needed.
+  v.siteNeed = requirements([...v.report.missing, ...v.report.unknown]);
+  v.furnaceNear = !!bot.findBlock({ matching: bot.registry.blocksByName.furnace.id, maxDistance: 24 });
+  // Until this agent has looked in storage it cannot know the team has enough,
+  // unless it can see that nothing is needed at all.
+  const nothingNeeded = v.siteLoaded && !Object.keys(v.siteNeed).length;
+  v.shortfall = v.storage || nothingNeeded
+    ? rawShortfall(v.siteNeed, merge(v.storage?.contents, v.inv), { furnaceNear: v.furnaceNear })
+    : null;
+  return v;
 }

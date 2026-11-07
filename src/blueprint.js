@@ -1,6 +1,6 @@
 // Predefined house blueprint and pure survey/planning functions.
 // Coordinates are relative to the build origin: x east, y up, z south. The door faces north (-z).
-import { GROUPS, AIR, isEmpty, isSoft, total } from './items.js';
+import { GROUPS, AIR, isEmpty, isSoft, isInteractive, total } from './items.js';
 
 // Which placed block satisfies each blueprint material.
 const BLOCK_TEST = {
@@ -131,7 +131,7 @@ export function hasSupport(cell, nameAt) {
   }
   return NEIGHBOURS.some(([dx, dy, dz]) => {
     const name = nameAt(cell.x + dx, cell.y + dy, cell.z + dz);
-    return name != null && !isSoft(name);
+    return name != null && !isSoft(name) && !isInteractive(name);
   });
 }
 
