@@ -1,0 +1,70 @@
+// SCOUT: sweeps outward from spawn in a square spiral and reports useful resources over team chat.
+// Reports queue while communication is down and are sent once it returns (see channel.js).
+import pathfinderModule from 'mineflayer-pathfinder';
+import { isLog } from '../items.js';
+import { storageAnchor } from '../world.js';
+import { baseView, findTargets, reportOnce } from './common.js';
+import { go } from '../skills.js';
+
+const { goals: { GoalXZ } } = pathfinderModule;
+export const SPACING = 24;
+export const MAX_RING = Number(process.env.SCOUT_RINGS || 6);
+
+// What the scout looks for, and whether only blocks open to the air count (reachable without digging).
+const RESOURCES = [
+  { kind: 'Wood', test: isLog, exposed: false },
+  { kind: 'Stone', test: name => name === 'stone', exposed: true },
+  { kind: 'Sand', test: name => name === 'sand', exposed: true },
+  { kind: 'Coal', test: name => name === 'coal_ore', exposed: true },
+  { kind: 'Iron', test: name => name === 'iron_ore', exposed: true },
+  { kind: 'Water', test: name => name === 'water', exposed: true },
+];
+
+export const regionOf = (kind, p) => `${kind}:${Math.floor(p.x / 16)},${Math.floor(p.z / 16)}`;
+
+/** Offset (in blocks) of the n-th waypoint on a square spiral; loops after MAX_RING rings. */
+export function waypointOffset(step, spacing = SPACING, maxRing = MAX_RING) {
+  const perCycle = 4 * maxRing * (maxRing + 1); // sum of 8r for r = 1..maxRing
+  let n = ((step % perCycle) + perCycle) % perCycle;
+  let ring = 1;
+  while (n >= 8 * ring) { n -= 8 * ring; ring++; }
+  const side = Math.floor(n / (2 * ring)), along = n % (2 * ring) - ring;
+  const [x, z] = [[along, -ring], [ring, along], [-along, ring], [-ring, -along]][side];
+  return { x: x * spacing, z: z * spacing };
+}
+
+export function perceive(ctx) {
+  const v = baseView(ctx);
+  v.sightings = [];
+  for (const resource of RESOURCES) {
+    const found = findTargets(ctx, resource.test, { maxDistance: 32, count: 16, protect: false, exposed: resource.exposed })[0];
+    if (found) v.sightings.push({ kind: resource.kind, position: found });
+  }
+  v.reported = new Set(ctx.state.reported);
+  v.step = ctx.state.scoutStep || 0;
+  const anchor = storageAnchor(ctx.bot);
+  const offset = waypointOffset(v.step);
+  v.waypoint = { x: anchor.x + offset.x, z: anchor.z + offset.z };
+  return v;
+}
+
+export function decide(v) {
+  if (v.lowHealth) return { type: 'rest', say: 'Low health; resting' };
+  const fresh = v.sightings.find(s => !v.reported.has(regionOf(s.kind, s.position)));
+  if (fresh) return { type: 'announce', kind: fresh.kind, target: fresh.position, say: `Found ${fresh.kind.toLowerCase()} at ${fresh.position.x} ${fresh.position.y} ${fresh.position.z}` };
+  return { type: 'scout_move', waypoint: v.waypoint, say: `Exploring waypoint ${v.step + 1} at ${v.waypoint.x}, ${v.waypoint.z}` };
+}
+
+export const actions = {
+  announce: (ctx, a) => { reportOnce(ctx, a.kind, a.target); },
+  async scout_move(ctx, a) {
+    // Advance the spiral whether or not the waypoint was reachable, so the scout never gets stuck on one spot.
+    ctx.state.scoutStep = (ctx.state.scoutStep || 0) + 1;
+    ctx.save();
+    await go(ctx, new GoalXZ(a.waypoint.x, a.waypoint.z), 30000);
+  },
+};
+
+export function configureMovements(movements) {
+  movements.canDig = false;
+}

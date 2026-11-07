@@ -1,15 +1,25 @@
 # GreatUniHack26 — Dragon Team
 
-Three independent Minecraft agents working towards defeating the Ender Dragon, even when their team communication fails.
+Independent Minecraft agents working towards defeating the Ender Dragon, even when their team communication fails.
 
-**Current milestone:** Ember, Flint, and Moss join a local Java Edition server, talk in Minecraft chat, autonomously collect nearby wood, remember discoveries/death locations, and exchange missed discoveries after a communication outage. Crafting, Nether progression, stronghold navigation, and dragon combat are **not implemented yet**. Decisions currently use explicit rules; no LLM or n8n account is required.
+**Current milestone: a starter house.** Each agent has a role and runs its own perceive → decide → act loop using deterministic rules (no LLM, no central controller):
+
+| Agent | Role | What it does on its own |
+| --- | --- | --- |
+| Flint_Miner | Miner | Crafts its own pickaxe (chopping a tree if needed), upgrades to stone, mines stone, returns cobblestone to storage. |
+| Moss_Lumberjack | Lumberjack | Fells nearby trees, delivers logs; once storage holds enough logs, delivers planks instead. Builds the storage chest if none exists. |
+| Ember_Builder | Builder | Compares the house blueprint with the world, clears obstructions, places whatever it holds materials for, fetches the rest from storage, and switches to another part of the house when a material is missing. |
+| Sage_Crafter | Crafter *(opt-in)* | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
+| Wren_Scout | Scout *(opt-in)* | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over team chat. |
+
+Miner, Lumberjack and Builder start by default. Crafter and Scout are implemented and tested offline but have **not been verified on a live server yet**. Enable them with `TEAM_ROLES=all` once the core three are working (see `.env.example`). Nether progression, stronghold navigation and dragon combat are **not implemented yet**.
 
 ## Start on this Mac
 
 1. In Minecraft Launcher, choose **Java Edition → Installations → New installation → release 1.21.1**. Launch that installation. You need access to Minecraft Java Edition on your Microsoft account.
 2. Double-click **Start Server.command**. On the first run, review the linked Minecraft EULA and type `yes` only if you accept. Wait for the server's `Done` message.
 3. In Minecraft, choose **Multiplayer → Direct Connection**, enter **localhost:25565**, and join.
-4. Double-click **Start Bots.command**. Watch Ember, Flint, and Moss join and introduce themselves.
+4. Double-click **Start Bots.command**. Watch Flint_Miner, Moss_Lumberjack and Ember_Builder join and introduce themselves.
 5. Open Minecraft chat with **T** and send `!team start`.
 
 To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **server terminal** (without a slash). Return with `gamemode survival YOUR_USERNAME`. To shut down, type `quit` in the bots terminal, then `stop` in the server terminal.
@@ -19,9 +29,9 @@ To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **s
 | Message | Effect |
 | --- | --- |
 | `!team help` | Show commands. |
-| `!team start` | Each bot starts its own wood-gathering decision loop. |
-| `!team status` | Each bot reports task, inventory, deaths, and communication state. |
-| `!team pause` | Stop gathering and movement. |
+| `!team start` | Each agent starts its own role loop. |
+| `!team status` | Each agent reports role, task, inventory, deaths, and communication state. |
+| `!team pause` | Stop work and movement. |
 | `!team come` | Pause gathering and approach you, if you are nearby. |
 | `!team comms off` | Block outgoing and incoming machine-readable team discoveries. |
 | `!team comms on` | Resume communication and request/replay missed observations. |
@@ -30,15 +40,17 @@ The bots terminal also accepts `start`, `pause`, `status`, `comms off`, and `com
 
 Bots use readable messages such as `[TEAM 0123abcd] Wood at 12 65 -30`. Narration remains visible to spectators during the outage; agents only learn from `[TEAM ...]` messages, which are blocked before parsing. This simulates failure of the team message channel, **not** disconnection from the Minecraft world. Agents can still observe their own surroundings.
 
-## How the prototype works
+## How the agents work
 
-- Each agent is a separate Node process with its own file in `.state/`. Files are not shared between bots.
-- The launcher starts/stops processes and passes human controls; it never assigns tasks or shares world state.
-- Each agent chooses nearby trees using its own observations and direction preference. Overlapping work is possible; task leasing is a future milestone.
-- Death locations are remembered as danger areas. Agents avoid choosing wood targets near known deaths. This is a simple conservative rule, not an inferred cause of death or a trained model.
-- Discoveries persist across process restarts. Reconnection requests a replay; duplicate messages are ignored. Memory is bounded to recent observations.
-- Bots reconnect to the server after connection loss. Respawn retains local memory.
-- The first milestone stops at eight logs per bot. It does not yet deposit items, craft tools, or proceed to the next stage.
+- Each agent is a separate Node process (`src/agent.js`) with its own memory file in `.state/`. Files are not shared between agents.
+- The launcher (`src/team.js`) only starts and stops processes and passes on human commands. It never assigns tasks or shares world state.
+- Every ~1.5 s an agent runs `perceive` (reads its own surroundings and inventory), then its role's pure `decide` function (`src/roles/*.js`), which returns one action. Shared skills in `src/skills.js` carry out that action. Pausing, dying or disconnecting cancels the action in progress.
+- **Shared conventions, not shared state.** Every agent works out the same storage location (chests within 4 blocks of world spawn) and house origin (6 east, 2 north of spawn) from the server's spawn point. Override them with `STORAGE_POS` and `BUILD_ORIGIN`. Agents learn what is in storage only by opening the chests themselves.
+- **Blueprint** (`src/blueprint.js`): drawn as one text grid per layer, so every block is listed explicitly and the result is always the same. **Progress** = required (non-air) blocks currently correct ÷ 83, shown in every builder message and in `!team status` as `[house 42%: 35/83 blocks]`. It is a 5×5 house with a cobblestone floor, log corner posts, plank walls and roof, a door, two glass-pane windows and a front step (25 cobblestone, 45 planks, 8 logs, 1 door, 2 glass panes, 1 stairs). The builder places the floor from the centre outward and the roof from the walls inward. It always stands outside the footprint so it can't wall itself in.
+- **Independence.** No agent waits on another. Without a lumberjack, the miner chops its own wood for a pickaxe. Without a chest, whichever agent has the wood builds one. The builder keeps placing whatever it has and says which materials it is waiting for.
+- **Communication.** Agents publish first sightings of resources (one per 16-block region) as `[TEAM id] Stone at x y z`. When an agent can't see a resource nearby, it travels to the nearest reported location. If it finds nothing there, it marks that spot exhausted in its own memory. Reports queue during a comms outage and replay when comms return.
+- Death locations are remembered as danger areas, and targets near them are avoided. Failed targets are skipped for 30 seconds.
+- The miner may dig through terrain to reach stone but never inside the storage area or the house site. The other agents don't dig while pathfinding.
 
 ## Local server and dependencies
 
@@ -75,8 +87,6 @@ n8n can later process queued run logs and lessons. Live decisions must continue 
 
 ## Verification
 
-`npm test` exercises communication isolation, replay after an outage, deduplication, and restart persistence using the actual message handler. In-game behaviour also needs a running Java server; test it with the steps above.
+`npm test` covers the communication channel (isolation, replay, deduplication, persistence) and every role's decision rules against simulated views. It also includes a blueprint simulation showing that repeatedly placing the builder's next cell completes the whole house. That test checks build order only, not reach or pathfinding.
 
-Live verification on 7 November 2026: all three bots joined the local 1.21.1 server and exchanged chat discoveries. Ember collected seven logs and Flint collected one during the initial run. During a simulated outage, all three kept their received knowledge unchanged while local discovery continued. A temporary observer sent `!team comms on` through Minecraft chat; all three restored communication and received previously missed facts.
-
-Known prototype limitations: pathfinding can time out on difficult terrain and replan; gathering is not yet dependable enough for a full survival run. The observer connection also emitted one dependency `PartialReadError` while reading item-component data, although it stayed connected and completed the chat test. Protocol compatibility needs further investigation before adding complex inventories and dragon progression. Library errors remain visible in the bot terminal.
+**Not yet verified in-game:** the role system has not run against a live server. The earlier live test (7 November 2026, wood gathering and comms outage/replay) was done on the previous single-role bot. Things most likely to need tuning in a live run: pathfinding timeouts on rough terrain, reaching roof cells from outside the footprint, door/stairs facing (any facing is accepted), and chest placement on uneven ground near spawn. Agents do not eat yet, so long runs will eventually starve them. The observer connection earlier emitted one dependency `PartialReadError` while reading item-component data. Inventory-heavy work (chests, crafting, furnaces) may expose that protocol issue.

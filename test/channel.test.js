@@ -65,3 +65,11 @@ test('restarting an isolated agent does not silently restore communication', () 
   restarted.channel.tick();
   assert.match(restarted.sent[1], /Wood at 3 64 4/);
 });
+
+test('resource kinds reported by the scout are understood by teammates', () => {
+  const a = make();
+  for (const [i, kind] of ['Stone', 'Sand', 'Coal', 'Iron', 'Water'].entries()) {
+    assert.equal(a.channel.receive('Wren', `[TEAM 0123456${i}] ${kind} at 1 2 3`), true);
+  }
+  assert.equal(a.channel.receive('Wren', '[TEAM 01234567] Diamonds at 1 2 3'), false);
+});

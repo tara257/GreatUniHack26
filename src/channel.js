@@ -49,7 +49,7 @@ export class TeamChannel {
       }
       return true;
     }
-    const match = /^\[TEAM ([a-f0-9]{8})\] (Wood|Danger) at (-?\d+) (-?\d+) (-?\d+)$/.exec(message);
+    const match = /^\[TEAM ([a-f0-9]{8})\] (Wood|Stone|Sand|Water|Coal|Iron|Danger) at (-?\d+) (-?\d+) (-?\d+)$/.exec(message);
     if (!match) return false;
     const key = `${sender}:${match[1]}`;
     if (this.state.seen.includes(key)) return false;
