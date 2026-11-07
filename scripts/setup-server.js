@@ -41,7 +41,7 @@ export async function setupServer() {
       'enforce-secure-profile=false', 'difficulty=easy', 'gamemode=survival',
       'max-players=8', 'view-distance=6', 'simulation-distance=4',
       'spawn-protection=0', 'enable-rcon=false', 'enable-query=false',
-      'allow-flight=true', 'motd=GreatUniHack26 - Dragon Team',
+      'allow-flight=true', 'motd=GreatUniHack26 - Shelter Team',
       'level-name=dragon-team', 'sync-chunk-writes=true', '',
     ].join('\n'));
   }

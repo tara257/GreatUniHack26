@@ -6,10 +6,10 @@ const children = names.map((name, index) => fork(new URL('./bot.js', import.meta
   stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
 }));
 
-console.log('\nDragon team starting: Ember, Flint, Moss.');
+console.log('\nShelter team starting: Ember, Flint, Moss.');
 console.log('Minecraft chat: !team help');
-console.log('Terminal controls: start | pause | status | comms off | comms on | quit');
-console.log('First milestone: each bot gathers wood. Later dragon stages are not implemented yet.\n');
+console.log('Terminal controls: start | pause | status | home X Y Z | comms off | comms on | quit');
+console.log('Goal: build a shared house, gather food, and survive.\n');
 const input = createInterface({ input: process.stdin, output: process.stdout });
 input.on('line', line => {
   const command = line.trim().toLowerCase();

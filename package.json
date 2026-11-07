@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Independent Minecraft agents working towards the Ender Dragon through communication outages.",
+  "description": "Independent Minecraft agents building a house and surviving through communication outages.",
   "engines": {
     "node": ">=22"
   },
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "mineflayer": "4.39.0",
-    "mineflayer-pathfinder": "2.4.5"
+    "mineflayer-pathfinder": "2.4.5",
+    "vec3": "0.1.10"
   }
 }
