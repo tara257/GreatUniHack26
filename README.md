@@ -40,6 +40,19 @@ The bots terminal also accepts `start`, `pause`, `status`, `comms off`, and `com
 
 Bots use readable messages such as `[TEAM 0123abcd] Wood at 12 65 -30`. Narration remains visible to spectators during the outage; agents only learn from `[TEAM ...]` messages, which are blocked before parsing. This simulates failure of the team message channel, **not** disconnection from the Minecraft world. Agents can still observe their own surroundings.
 
+## Demo helpers
+
+Run these in a second terminal while the server is running. They send console commands through `.server/console-inbox.txt`, which the server launcher forwards to the server console.
+
+| Command | What it does |
+| --- | --- |
+| `npm run cmd -- <command>` | Send any server console command, e.g. `npm run cmd -- gamemode creative b_caul`. |
+| `npm run stage` | A temporary surveyor bot finds flat open ground with trees near spawn and moves the world spawn there (storage and the house follow). It sets day, clear weather, peaceful difficulty, `keepInventory` and spawn radius 0. It teleports everyone over and dresses the bots: miner in an iron helmet, lumberjack in a red cap and shirt, builder in a yellow hard hat and orange hi-vis, crafter in a purple apron, scout in green. Name tags are coloured by role. `npm run stage -- x y z` uses your own coordinates. |
+| `npm run boost` | Speed II, Haste II and Saturation for every bot (effects are cleared on death, so re-run it then), plus a stone pickaxe for the miner and an iron axe for the lumberjack. |
+| `npm run boost -- materials` | Also gives the builder all 83 house blocks, so it builds the whole house straight away. |
+
+Set `PLAYER_NAME` if your Minecraft username is not `b_caul`. True custom skins are not possible on this vanilla offline server, so the outfits are made from dyed armour instead.
+
 ## How the agents work
 
 - Each agent is a separate Node process (`src/agent.js`) with its own memory file in `.state/`. Files are not shared between agents.

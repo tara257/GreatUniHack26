@@ -11,7 +11,10 @@
     "setup:server": "node scripts/setup-server.js",
     "server": "node scripts/server.js",
     "bots": "node --env-file-if-exists=.env src/team.js",
-    "test": "node --test"
+    "test": "node --test",
+    "cmd": "node scripts/cmd.js",
+    "stage": "node scripts/stage.js",
+    "boost": "node scripts/boost.js"
   },
   "dependencies": {
     "mineflayer": "4.39.0",

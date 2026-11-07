@@ -95,7 +95,7 @@ function connect() {
     const movements = new Movements(bot);
     movements.allow1by1towers = false;
     movements.allowParkour = false;
-    movements.allowSprinting = false;
+    movements.allowSprinting = true;
     for (const block of ['chest', 'barrel', 'crafting_table', 'furnace']) {
       const id = bot.registry.blocksByName[block]?.id;
       if (id != null) movements.blocksCantBreak.add(id);
@@ -107,7 +107,7 @@ function connect() {
     // Request facts we may have missed while disconnected from the game server.
     if (channel.online) chatQueue.push('[TEAM SYNC] Please resend your discoveries.');
     clearInterval(taskTimer); clearInterval(chatTimer);
-    taskTimer = setInterval(work, 1500 + index * 150);
+    taskTimer = setInterval(work, 600 + index * 50);
     chatTimer = setInterval(() => {
       if (!spawned) return;
       if (chatQueue.length) {

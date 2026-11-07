@@ -82,6 +82,6 @@ function choose(v) {
 // Builders never dig while walking, and avoid walking through the house so they cannot wall themselves in.
 export function configureMovements(movements, bot) {
   movements.canDig = false;
-  const origin = buildOrigin(bot);
-  movements.exclusionAreasStep = [block => (insideFootprint(HOUSE, origin, block.position) ? 50 : 0)];
+  // Origin is re-read each time: it follows the world spawn if that moves.
+  movements.exclusionAreasStep = [block => (insideFootprint(HOUSE, buildOrigin(bot), block.position) ? 50 : 0)];
 }
