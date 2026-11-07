@@ -7,7 +7,7 @@ import { HOUSE, insideFootprint } from './blueprint.js';
 import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset } from './world.js';
 
 const { goals } = pathfinderModule;
-const { Goal, GoalNear, GoalXZ, GoalBlock, GoalLookAtBlock, GoalPlaceBlock } = goals;
+const { Goal, GoalNear, GoalXZ, GoalNearXZ, GoalBlock, GoalLookAtBlock, GoalPlaceBlock } = goals;
 
 export class Cancelled extends Error {}
 
@@ -25,10 +25,10 @@ export function check(ctx) { if (!ctx.alive()) throw new Cancelled('Task cancell
 export async function go(ctx, goal, ms = 20000) {
   check(ctx);
   const { bot } = ctx;
-  let timedOut = false;
-  const timer = setTimeout(() => { if (ctx.alive()) { timedOut = true; bot.pathfinder.setGoal(null); } }, ms);
+  let expired=false;
+  const timer = setTimeout(() => { if (ctx.alive()) { expired=true;bot.pathfinder.setGoal(null); } }, ms);
   try { await bot.pathfinder.goto(goal); }
-  catch (error) { throw timedOut ? new Error(`Gave up walking after ${ms / 1000}s`) : error; }
+  catch(error) { if(expired)throw new Error('Route timed out; choosing another approach');throw error; }
   finally { clearTimeout(timer); }
   check(ctx);
 }
@@ -43,19 +43,25 @@ const itemId = (bot, name) => {
 
 // ── Movement and exploration ────────────────────────────────────────────────
 
-export const HOP = 32;
-
-/** Walk towards a target; far targets are approached in hops so path planning never has to cover the whole trip. */
-export async function travel(ctx, target, range = 3, ms = 25000) {
+export async function travel(ctx, target, range = 3, ms = 90000) {
   const p = toVec(target);
-  const me = ctx.bot.entity.position;
-  const flat = Math.hypot(p.x - me.x, p.z - me.z);
-  if (flat > HOP + 8) {
-    const k = HOP / flat;
-    await go(ctx, new GoalXZ(Math.floor(me.x + (p.x - me.x) * k), Math.floor(me.z + (p.z - me.z) * k)), ms);
-    return;
+  const deadline=Date.now()+ms;
+  // Bound path searches to nearby waypoints. Searching from a distant beach to
+  // the chest in one pass can exhaust A* before the bot takes a single step.
+  while(Math.hypot(p.x-ctx.bot.entity.position.x,p.z-ctx.bot.entity.position.z)>22) {
+    check(ctx);
+    if(Date.now()>=deadline)throw new Error('Long route timed out');
+    const start=ctx.bot.entity.position.clone(),angle=Math.atan2(p.z-start.z,p.x-start.x);
+    let moved=false,lastError;
+    for(const turn of [0,Math.PI/3,-Math.PI/3]) {
+      try {
+        await go(ctx,new GoalNearXZ(Math.floor(start.x+Math.cos(angle+turn)*16),Math.floor(start.z+Math.sin(angle+turn)*16),3),Math.min(20000,Math.max(1,deadline-Date.now())));
+        moved=ctx.bot.entity.position.distanceTo(start)>3;if(moved)break;
+      } catch(error) {check(ctx);lastError=error;}
+    }
+    if(!moved)throw lastError || new Error('No accessible waypoint on this route');
   }
-  await go(ctx, new GoalNear(p.x, p.y, p.z, range), ms);
+  await go(ctx, new GoalNear(p.x, p.y, p.z, range), Math.max(1,deadline-Date.now()));
 }
 
 // Agents explore within this distance of home (the storage spot).
@@ -104,7 +110,10 @@ export async function dig(ctx, target, { collect = true, approach = true } = {})
   const tool = bot.pathfinder.bestHarvestTool(block);
   if (tool) await bot.equip(tool, 'hand');
   if (!bot.canDigBlock(block)) throw new Error(`Cannot reach ${block.name} at ${pos}`);
+  const evidenceTicket = ctx.evidence?.begin();
   await bot.dig(block, true);
+  const afterDig = bot.blockAt(pos);
+  if (afterDig && afterDig.name !== block.name && (isLog(block.name) || /^(stone|deepslate|sand|red_sand)$|_ore$/.test(block.name))) ctx.evidence?.record(evidenceTicket, 'resourceBlocks', 1, block.name);
   check(ctx);
   if (collect) await collectDrops(ctx, pos);
   return true;
@@ -169,7 +178,10 @@ export async function placeAt(ctx, target, group, facing = null) {
   const reference = referenceFor(bot, pos, doorLike);
   if (!reference) throw new Error(`Lost reference block at ${pos}`);
   await bot.equip(item, 'hand');
+  const evidenceTicket = ctx.evidence?.begin();
   await placeFacing(ctx, reference, facing);
+  const placed = bot.blockAt(pos);
+  if (placed && (GROUPS[group] ? GROUPS[group](placed.name) : placed.name === group)) ctx.evidence?.record(evidenceTicket, 'blocksPlaced', 1, placed.name);
   check(ctx);
   return true;
 }
@@ -225,6 +237,7 @@ export async function ensureTable(ctx) {
  * has changed for a moment.
  */
 export async function inventorySettled(bot, quietMs = 400, maxMs = 3000) {
+  if (typeof bot.inventory?.on !== 'function') return; // nothing to listen to (e.g. a test double)
   let last = Date.now();
   const touched = () => { last = Date.now(); };
   bot.inventory.on('updateSlot', touched);
@@ -237,6 +250,12 @@ export async function inventorySettled(bot, quietMs = 400, maxMs = 3000) {
 /** Craft `count` result items (rounded up to whole recipe batches, limited by ingredients). */
 export async function craft(ctx, name, count = 1) {
   const { bot } = ctx;
+  // Recover ingredients/cursor left by a timed-out inventory craft.
+  if (bot.colonyInventorySync && !bot.currentWindow) {
+    const inventory = bot.inventory;
+    if (inventory.selectedItem) await bot.putSelectedItemRange(inventory.inventoryStart, inventory.inventoryEnd, inventory, null);
+    for (let slot = 1; slot <= 4; slot++) if (inventory.slots[slot]) await bot.putAway(slot);
+  }
   const id = itemId(bot, name);
   let table = null;
   if (!bot.recipesAll(id, null, null).length) {
@@ -251,12 +270,18 @@ export async function craft(ctx, name, count = 1) {
   const per = recipe.result.count;
   let times = Math.max(1, Math.ceil(count / per));
   while (times > 1 && !bot.recipesFor(id, null, times * per, table).length) times--;
+  const evidenceTicket = ctx.evidence?.begin(), heldBefore = counts(bot)[name] || 0;
   // One craft at a time: mineflayer's own repeat count runs ahead of the server's slot updates.
   for (let i = 0; i < times; i++) {
     await bot.craft(recipe, 1, table);
     await inventorySettled(bot);
     check(ctx);
   }
+  if (bot.colonyInventorySync) await bot._syncWindow(bot.inventory);
+  const gained = Math.min(times * per, (counts(bot)[name] || 0) - heldBefore);
+  if (gained <= 0) throw new Error(`Crafting ${name} produced no confirmed inventory gain`);
+  ctx.evidence?.record(evidenceTicket, 'itemsCrafted', gained, name);
+  check(ctx);
   return times * per;
 }
 
@@ -266,7 +291,8 @@ export async function craft(ctx, name, count = 1) {
  */
 export async function ensurePlanks(ctx, wanted, wood = null) {
   const { bot } = ctx;
-  const type = wood || dominantWood(counts(bot)) || 'oak';
+  const type = wood || dominantWood(counts(bot));
+  if (!type) throw new Error('Need wood to craft planks');
   const plankName = `${type}_planks`;
   let have = counts(bot)[plankName] || 0;
   while (have < wanted) {
@@ -274,7 +300,9 @@ export async function ensurePlanks(ctx, wanted, wood = null) {
     if (!log) throw new Error(`Need ${wanted - have} more ${plankName} and have no ${type} logs`);
     const batches = Math.min(log.count, Math.ceil((wanted - have) / 4));
     await craft(ctx, planksFor(log.name), batches * 4);
-    have = counts(bot)[plankName] || 0;
+    const next = counts(bot)[plankName] || 0;
+    if (next <= have) throw new Error(`Crafting ${plankName} produced no confirmed inventory gain`);
+    have = next;
   }
 }
 
@@ -341,7 +369,7 @@ export async function ensureStorage(ctx, { create = true } = {}) {
 async function withChest(ctx, block, fn) {
   const { bot } = ctx;
   if (bot.entity.position.distanceTo(block.position) > 3.5) {
-    await go(ctx, new GoalNear(block.position.x, block.position.y, block.position.z, 2), 20000);
+    await travel(ctx,block.position,2);
   }
   const window = await bot.openContainer(bot.blockAt(block.position));
   ctx.memory.window = window;
@@ -382,7 +410,11 @@ export async function deposit(ctx, keep = () => 0) {
     seen.set(chest.position.toString(), await withChest(ctx, chest, async window => {
       for (const { item, give } of plan()) {
         if (give <= 0) continue;
-        try { await window.deposit(item.type, null, give); deposited += give; }
+        try {
+          const evidenceTicket = ctx.evidence?.begin(), heldBefore = counts(bot)[item.name] || 0;
+          await window.deposit(item.type, null, give); deposited += give;
+          ctx.evidence?.record(evidenceTicket, 'itemsDeposited', Math.min(give, heldBefore - (counts(bot)[item.name] || 0)), item.name);
+        }
         catch { break; } // chest full: try the next one
       }
       return countItems(window.containerItems());

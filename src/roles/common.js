@@ -65,14 +65,15 @@ export function rememberedTarget(ctx, kind, seeingAny) {
   const { bot, state, save } = ctx;
   const me = bot.entity.position;
   let locations = knownLocations(state, kind);
+  const failed = ctx.memory ? activeFailures(ctx.memory) : new Set();
+  locations = locations.filter(p => !failed.has(keyOf(p)));
   if (!seeingAny) {
     const here = locations.filter(p => me.distanceTo(toVec(p)) < 8);
-    if (here.length) { here.forEach(p => markExhausted(state, p)); save(); locations = knownLocations(state, kind); }
+    if (here.length) { here.forEach(p => markExhausted(state, p)); save(); locations = knownLocations(state, kind).filter(p=>!failed.has(keyOf(p))); }
   }
-  // Skip places we recently failed to reach, and anything too far from home to be worth the trip.
-  const failed = activeFailures(ctx.memory);
+  // Recently failed places are already filtered out above; also ignore anything too far from home.
   const home = storageAnchor(bot);
-  return nearest(me, locations.filter(p => !failed.has(keyOf(p)) && toVec(p).distanceTo(home) <= HOME_RANGE));
+  return nearest(me, locations.filter(p => toVec(p).distanceTo(home) <= HOME_RANGE));
 }
 
 /** Publish a resource sighting once per 16-block region, so chat is not flooded with nearby duplicates. */
@@ -80,6 +81,7 @@ export function reportOnce(ctx, kind, position) {
   const p = toVec(position);
   const region = `${kind}:${Math.floor(p.x / 16)},${Math.floor(p.z / 16)}`;
   if (ctx.state.reported.includes(region)) return false;
+  if (/^(Wood|Stone|Sand|Coal|Iron|Water)$/.test(kind)) ctx.evidence?.record(ctx.observationTicket, 'discoveries', 1, kind);
   ctx.state.reported = [...ctx.state.reported, region].slice(-256);
   ctx.publish(kind, p);
   return true;

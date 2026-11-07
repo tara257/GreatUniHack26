@@ -272,3 +272,31 @@ comms.start();
 `onMessage` is awaited before ACK. Duplicate deliveries are suppressed while a handler runs and after it succeeds. A thrown/rejected handler produces `handlerError` and no ACK, allowing retry. `message` is a notification event after successful handling. Other adapter events include `ready`, `offline`, `accepted`, `deliveryStatus`, `linkState`, `stateSync`, `stateIgnored`, `connectionError`, `relayError`, `protocolError`, and `publishRejected`. These are nonfatal transport events; the application decides how to display or record them.
 
 When integrating, select one machine-readable peer-data path. Continuing to parse the existing `[TEAM ...]` Minecraft chat messages during a WebSocket partition would bypass the experiment. Human-readable chat narration may remain, and agents may still observe visible world changes locally. Do not feed operator snapshots back into agent decision loops.
+
+## Optional outage evidence telemetry
+
+`REGISTERED.link` and `LINK_STATE` include `evidenceWindow` (opaque string or `null`). This identifies an operator measurement interval, not a task or peer observation. The Minecraft adapter supplies it only to instrumentation; decisions do not depend on it. A changed blocked-link set starts a new interval. Restoring all faults closes it.
+
+Real bots include optional `STATUS_UPDATE.payload.progress`:
+
+```json
+{
+  "windowId": "opaque-window-id",
+  "totals": {"resourceBlocks": 3, "itemsCrafted": 0, "itemsDeposited": 0, "blocksPlaced": 0, "discoveries": 1},
+  "lastAction": {"metric": "resourceBlocks", "amount": 1, "item": "stone", "at": 1794067000000}
+}
+```
+
+Counters are monotonic per source epoch and window. Capture a marker before an operation and record its verified outcome only if the marker is still current. Digging checks an actual block change; crafting/depositing check inventory deltas; placing checks the resulting block. Discovery counts are new resource regions, not repeated messages. The relay requires fresh source-version acceptance, the active marker and valid nonnegative counters; decreasing counters or older epochs cannot add credit. It sums new deltas, accounts for process epochs and freezes results on restoration. Timestamps are for display; clock comparisons do not admit progress across outage boundaries.
+
+Operator snapshots add `evidence: {activeId, captures}`. Each capture includes start/end times, blocked links, affected-agent rows with blocked/total peers, counters, report times, Minecraft reports and interruptions. A comparable fully loaded builder survey adds house before/after context. This observer-only aggregate is never fed back into bot decisions. Latest eight captures are retained in memory; reset/restart clears them. Missing markers, transport loss or late reports can undercount; clients must not infer success from absence of telemetry.
+
+## Local operator roster API
+
+These endpoints require the same operator Bearer credential as fault controls and a loopback-bound relay:
+
+- `GET /api/roster`: launcher availability and five `{name, role, selected, processRunning}` records.
+- `POST /api/roster` with `{"action":"roles","roles":["miner","crafter"]}`: apply membership, preserving unchanged processes.
+- `POST /api/roster` with `{"action":"start"}` or `{"action":"pause"}`: human lifecycle command.
+
+The relay delegates to the separate `npm run bots` launcher over a private local socket. It neither starts a launcher nor assigns gameplay tasks. Invalid input returns 400; missing launcher returns 503; non-loopback deployments return 403. Removing a role really disconnects it from Minecraft, unlike communication isolation. Roster changes retain the agent's saved memory and Minecraft inventory. No operator credential is passed to agent children.

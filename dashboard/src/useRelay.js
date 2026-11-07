@@ -49,10 +49,15 @@ export function useRelay() {
       const result=await response.json();
       if(!response.ok)throw new Error(result.message || result.error || 'Control failed');
       const previous=current.current;
-      if(!previous || previous.serverId!==result.serverId || result.revision>=previous.revision){current.current=result;receivedAt.current=Date.now();setSnapshot(result);setClock(Date.now());}
+      if(result.serverId && (!previous || previous.serverId!==result.serverId || result.revision>=previous.revision)){current.current=result;receivedAt.current=Date.now();setSnapshot(result);setClock(Date.now());}
       return result;
     } finally {setPending(false);}
   },[status]);
   const connectWithToken=token=>{setManualToken(token);setRetry(r=>r+1);};
-  return {snapshot,status,error,pending,command,connectWithToken,now:snapshot?snapshot.at+clock-receivedAt.current:clock};
+  const getRoster=useCallback(async()=>{
+    if(status!=='live')throw new Error('Relay offline');
+    const response=await fetch('/api/roster',{headers:{Authorization:'Bearer '+credential.current},signal:AbortSignal.timeout(5000)});
+    const result=await response.json();if(!response.ok)throw new Error(result.message || 'Bot launcher unavailable');return result;
+  },[status]);
+  return {snapshot,status,error,pending,command,connectWithToken,getRoster,now:snapshot?snapshot.at+clock-receivedAt.current:clock};
 }

@@ -8,7 +8,7 @@ import { go } from '../skills.js';
 
 const { goals: { GoalXZ } } = pathfinderModule;
 export const SPACING = 24;
-export const MAX_RING = Number(process.env.SCOUT_RINGS || 6);
+export const MAX_RING = Number(process.env.SCOUT_RINGS || 2);
 export const waypointOffset = (step, spacing = SPACING, maxRing = MAX_RING) => spiral(step, spacing, maxRing);
 
 // What the scout looks for, and whether only blocks open to the air count (reachable without digging).
@@ -44,6 +44,7 @@ export function perceive(ctx) {
 
 export function decide(v) {
   if (v.lowHealth) return { type: 'rest', say: 'Low health; resting' };
+  if (v.distanceToSite>40 && (!v.storage || v.storage.age>60000)) return {type:'travel',target:v.origin,range:5,say:'Returning to camp to check supplies before exploring further'};
   if (v.shortfall && v.shortfall.cobblestone === 0 && v.shortfall.wood === 0) return helpBuild(v);
   if (v.storageExists && (!v.storage || v.storage.age > STORAGE_CHECK_MS)) return { type: 'inspect_storage', say: 'Checking storage to see if the team still needs resources' };
   const fresh = v.sightings.find(s => !v.reported.has(regionOf(s.kind, s.position)));

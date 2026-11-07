@@ -12,6 +12,10 @@ import { run, Cancelled } from './skills.js';
 import { isProtected } from './world.js';
 import { reportOnce, failureKey } from './roles/common.js';
 import { observeHouse } from './house-telemetry.js';
+import { ProgressEvidence } from './progress-evidence.js';
+import { installInventorySync } from './inventory-sync.js';
+import { adapt, fallbackActions } from './roles/adaptation.js';
+import { perceiveSurvival, survivalActions } from './survival.js';
 
 const { pathfinder, Movements, goals: { GoalNear } } = pathfinderModule;
 const name = process.argv[2];
@@ -30,6 +34,7 @@ mkdirSync(directory, { recursive: true });
 const stateFile = resolve(directory, `${name}.json`);
 let state = { history: [], seen: [], knowledge: [], reported: [], exhausted: [], deaths: 0, running: false };
 if (existsSync(stateFile)) state = { ...state, ...JSON.parse(readFileSync(stateFile, 'utf8')) };
+if (process.env.BOT_AUTOSTART==='1') state.running=true;
 // Write to a temporary file and rename it over the old one, so a crash never leaves half a file.
 // Windows refuses the rename while another program (an editor, a file watcher, antivirus) briefly
 // has the file open, so retry a few times and finally write the file directly.
@@ -48,6 +53,7 @@ const save = () => {
 
 // Runtime-only memory: recent failures and the last look inside storage.
 const memory = { failed: new Map(), storage: null, window: null };
+const progressEvidence = new ProgressEvidence();
 let bot, channel, spawned = false, minecraftConnected = false, stopping = false, activeTask = null, generation = 0;
 let currentTask = 'Waiting for the world', reconnectTimer, taskTimer, chatTimer, lastSignature = '';
 let decisions=0,completedActions=0,commsTimer;
@@ -78,6 +84,7 @@ function observeForPeers() {
   const position=bot?.entity?.position;
   return {resources,status:{minecraft:{connected:minecraftConnected && !stopping},
     task:currentTask.slice(0,256),role:roleName,
+    progress:progressEvidence.snapshot(),
     ...(roleName==='builder' && minecraftConnected?{house:observeHouse(bot)}:{}),
     ...(Number.isFinite(bot?.health)?{health:Math.max(0,Math.min(20,bot.health))}:{}),
     ...(Number.isFinite(bot?.food)?{hunger:Math.max(0,Math.min(20,bot.food))}:{}),
@@ -94,6 +101,9 @@ function halt() {
 }
 
 function control(command, player) {
+  if (!spawned && ['start','pause'].includes(command)) {
+    state.running=command==='start';save();return log(state.running?'Will start work after joining':'Will join paused');
+  }
   if (!spawned) return log('Waiting to join the local server.');
   if (command === 'help') return say('Commands: !team start | pause | status | comms off | comms on | come');
   if (command === 'status') return say(`${roleName}: ${currentTask}. Carrying ${inventorySummary()}. Deaths ${state.deaths}, comms ${channel.summary ?? (channel.online ? 'on' : 'OFF')}, learned ${state.knowledge.length}.`);
@@ -119,18 +129,22 @@ function connect() {
     username: name, version: process.env.MC_VERSION || '1.21.1', auth: 'offline' });
   bot.loadPlugin(pathfinder);
   bot.on('spawn', () => {
+    installInventorySync(bot);
     spawned = true;minecraftConnected=true;
     currentTask = state.running ? 'Starting work' : 'Paused — ready to start';
     const movements = new Movements(bot);
     movements.allow1by1towers = false;
     movements.allowParkour = false;
     movements.allowSprinting = true;
+    movements.maxDropDown = 2;
     movements.canOpenDoors = true; // so nobody is shut inside the finished house
     for (const block of ['chest', 'barrel', 'crafting_table', 'furnace']) {
       const id = bot.registry.blocksByName[block]?.id;
       if (id != null) movements.blocksCantBreak.add(id);
     }
     role.configureMovements?.(movements, bot, isProtected);
+    movements.exclusionAreasBreak = [block => isProtected(bot,block.position) ? 100 : 0];
+    memory.movements=movements;
     bot.pathfinder.setMovements(movements);
     bot.pathfinder.thinkTimeout = 3000;
     say(`Hello! I am ${name}, the team ${roleName}. Type !team start to begin, or !team help.`);
@@ -175,10 +189,10 @@ async function work() {
   activeTask = task;
   const token = generation;
   const ctx = {
-    bot, state, save, memory, role: roleName, angle, log, narrate,
+    bot, state, save, memory, role: roleName, angle, log, narrate, evidence:progressEvidence, observationTicket:progressEvidence.begin(),
     alive: () => token === generation && activeTask === task && spawned && state.running,
     publish: (kind, position) => channel.publish(kind, position),
-    roleActions: role.actions,
+    roleActions: {...fallbackActions,...role.actions,...survivalActions},
   };
   let action;
   try {
@@ -187,7 +201,11 @@ async function work() {
     for (const [kind, field] of [['Wood', 'tree'], ['Stone', 'stone'], ['Sand', 'sand']]) {
       if (view[field]) reportOnce(ctx, kind, view[field]);
     }
-    action = role.decide(view);decisions++;
+    action = perceiveSurvival(ctx) || await adapt(ctx,view,role.decide(view));decisions++;
+    if(action.localGoal==='sand')memory.gatheringSand=true;
+    memory.movements.allowSprinting = bot.food>16 && bot.health>10;
+    // Every role may clear a blocked route, but the house and utilities remain protected.
+    memory.movements.canDig = true;
     narrate(action.say || action.type);
     await run(ctx, action);completedActions++;
   } catch (error) {
@@ -195,6 +213,8 @@ async function work() {
     log(`Replanning after ${action?.type ?? 'perception'}: ${error.message}`);
     // Avoid retrying the same target immediately; other options get a turn.
     if (action) memory.failed.set(failureKey(action), Date.now() + 30000);
+    if (action?.entityId) memory.failed.set('entity:'+action.entityId,Date.now()+30000);
+    if (action?.type==='explore') memory.exploreTurn=(memory.exploreTurn || 0)+1;
     if (action && ['deposit', 'withdraw', 'inspect_storage'].includes(action.type)) memory.storage = { contents: {}, at: Date.now() };
   } finally {
     if (activeTask === task) activeTask = null;
@@ -205,14 +225,16 @@ process.on('message', message => { if (message?.type === 'control') control(mess
 function shutdown() {
   stopping = true; state.running = false; save();
   clearTimeout(reconnectTimer); clearInterval(taskTimer); clearInterval(chatTimer);
-  clearInterval(commsTimer);channel.close?.();
+  clearInterval(commsTimer);
   bot?.quit('Team stopped');
+  setTimeout(()=>{channel.tick?.();channel.close?.();},100).unref();
   setTimeout(() => process.exit(0), 500).unref();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 const channelOptions={state,save,learn:event=>log(`Learned ${event.kind.toLowerCase()} location from ${event.sender}: ${event.position.join(', ')}`)};
 channel=transport==='websocket'?new MinecraftChannel({...channelOptions,agentId:name,observe:observeForPeers,log,notice:say,
+  onEvidenceWindow:id=>progressEvidence.setWindow(id),
   url:process.env.COMMS_URL,token:process.env.COMMS_AGENT_TOKEN}):
   new TeamChannel({...channelOptions,send:text=>{if(spawned){bot.chat(text);log(text);}}});
 if(transport==='websocket')commsTimer=setInterval(()=>channel.tick(),2000);

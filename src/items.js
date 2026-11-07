@@ -56,11 +56,12 @@ export const planksFor = logName => `${woodOf(logName)}_planks`;
 
 // The most plentiful wood type held, so crafted doors/stairs match the planks used.
 export function dominantWood(counts) {
-  let best = null, bestCount = 0;
+  let best = null, bestCount = 0; const potential = {};
   for (const [name, count] of Object.entries(counts)) {
     if (!isPlanks(name) && !isLog(name)) continue;
-    const amount = isLog(name) ? count * 4 : count;
-    if (amount > bestCount) { best = woodOf(name); bestCount = amount; }
+    const wood = woodOf(name);
+    potential[wood] = (potential[wood] || 0) + (isLog(name) ? count * 4 : count);
+    if (potential[wood] > bestCount) { best = wood; bestCount = potential[wood]; }
   }
   return best;
 }
