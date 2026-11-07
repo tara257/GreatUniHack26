@@ -1,8 +1,21 @@
-# GreatUniHack26 — Shelter Team
+# GreatUniHack26 — Autonomous Colony
 
 Ember, Flint, and Moss are independent Minecraft agents with one shared goal: **build a house and stay alive, even when team communication fails**. You can watch them in Java Edition and read their decisions in chat.
 
 They use explicit decision rules, not an LLM or a trained model. No API key or n8n subscription is needed.
+
+## Communication infrastructure
+
+The standalone Node.js WebSocket relay is ready for simulated-agent testing. It supports unique agent IDs, the six standard message types, direct/broadcast delivery, selected-agent isolation, group partitions, link failures, bounded queues, acknowledgements, expiry, and reconnection. It keeps relay connectivity separate from reported Minecraft presence. Agent decisions remain local.
+
+```sh
+npm run comms:demo       # Three independent simulated processes, partition and heal
+npm run comms:server     # Persistent relay on 127.0.0.1:8090
+npm run comms:agent -- Ember  # Run each simulated agent in a separate terminal
+npm run test:comms
+```
+
+See the **[message protocol and Minecraft integration guide](docs/communication-protocol.md)** for schemas, operator controls, delivery guarantees, and future dashboard endpoints. Queues are in memory; relay-process restart recovery requires agents to re-advertise their own facts. This initial implementation has no dashboard UI and does not replace the running Minecraft bots' existing chat transport.
 
 ## Start on this Mac
 

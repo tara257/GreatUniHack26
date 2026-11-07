@@ -12,11 +12,16 @@
     "server": "node scripts/server.js",
     "bots": "node --env-file-if-exists=.env src/team.js",
     "report": "node --env-file-if-exists=.env scripts/report.js",
+    "comms:server": "node --env-file-if-exists=.env scripts/comms-server.js",
+    "comms:agent": "node --env-file-if-exists=.env scripts/sim-agent.js",
+    "comms:demo": "node scripts/comms-demo.js",
+    "test:comms": "node --test test/comms/*.test.js",
     "test": "node --test"
   },
   "dependencies": {
     "mineflayer": "4.39.0",
     "mineflayer-pathfinder": "2.4.5",
-    "vec3": "0.1.10"
+    "vec3": "0.1.10",
+    "ws": "8.22.1"
   }
 }
