@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Independent Minecraft agents building a house and surviving through communication outages.",
+  "description": "Independent role-based Minecraft agents building a house together through communication outages.",
   "engines": {
     "node": ">=22"
   },
@@ -11,12 +11,14 @@
     "setup:server": "node scripts/setup-server.js",
     "server": "node scripts/server.js",
     "bots": "node --env-file-if-exists=.env src/team.js",
-    "report": "node --env-file-if-exists=.env scripts/report.js",
+    "test": "node --test",
+    "test:comms": "node --test test/comms/*.test.js",
+    "cmd": "node scripts/cmd.js",
+    "stage": "node scripts/stage.js",
+    "boost": "node scripts/boost.js",
     "comms:server": "node --env-file-if-exists=.env scripts/comms-server.js",
     "comms:agent": "node --env-file-if-exists=.env scripts/sim-agent.js",
-    "comms:demo": "node scripts/comms-demo.js",
-    "test:comms": "node --test test/comms/*.test.js",
-    "test": "node --test"
+    "comms:demo": "node scripts/comms-demo.js"
   },
   "dependencies": {
     "mineflayer": "4.39.0",

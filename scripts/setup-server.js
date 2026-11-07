@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 export const serverDirectory = fileURLToPath(new URL('../.server/', import.meta.url));
 export const version = '1.21.1';
+// Lines appended here are forwarded to the running server console (see server.js, cmd.js).
+export const inboxPath = fileURLToPath(new URL('../.server/console-inbox.txt', import.meta.url));
 const jarPath = `${serverDirectory}/server.jar`;
 const metadataPath = `${serverDirectory}/download.json`;
 async function exists(path) { try { await access(path); return true; } catch { return false; } }

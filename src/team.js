@@ -1,15 +1,18 @@
+// Launcher only: starts one independent process per agent and relays human operator commands.
+// It never assigns tasks or shares world state between agents.
 import { fork } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { selectRoster } from './roster.js';
 
-const names = ['Ember', 'Flint', 'Moss'];
-const children = names.map((name, index) => fork(new URL('./bot.js', import.meta.url), [name, String(index)], {
+const roster = selectRoster();
+const children = roster.map(member => fork(new URL('./agent.js', import.meta.url), [member.name], {
   stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
 }));
 
-console.log('\nShelter team starting: Ember, Flint, Moss.');
+console.log(`\nTeam starting: ${roster.map(m => `${m.name} (${m.role})`).join(', ')}.`);
 console.log('Minecraft chat: !team help');
-console.log('Terminal controls: start | pause | status | stats | home X Y Z | comms off | comms on | quit');
-console.log('Goal: build a shared house, gather food, and survive.\n');
+console.log('Terminal controls: start | pause | status | comms off | comms on | quit');
+console.log('Set TEAM_ROLES=all (or a comma-separated list) to change who joins.\n');
 const input = createInterface({ input: process.stdin, output: process.stdout });
 input.on('line', line => {
   const command = line.trim().toLowerCase();

@@ -1,8 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { setupServer, serverDirectory } from './setup-server.js';
+import { setupServer, serverDirectory, inboxPath } from './setup-server.js';
 
 await setupServer();
 if (!/^eula=true\s*$/m.test(await readFile(`${serverDirectory}/eula.txt`, 'utf8'))) {
@@ -20,13 +21,34 @@ if (!/^eula=true\s*$/m.test(await readFile(`${serverDirectory}/eula.txt`, 'utf8'
 }
 const properties = await readFile(`${serverDirectory}/server.properties`, 'utf8');
 if (!/^server-ip=127\.0\.0\.1\s*$/m.test(properties)) throw new Error('This local bot setup requires server-ip=127.0.0.1.');
+// Find Java directly so a terminal opened before installation (stale PATH) still works.
+function windowsJavas() {
+  if (process.platform !== 'win32') return [];
+  const found = [];
+  if (process.env.JAVA_HOME) found.push(join(process.env.JAVA_HOME, 'bin', 'java.exe'));
+  for (const root of ['C:\\Program Files\\Eclipse Adoptium', 'C:\\Program Files\\Microsoft', 'C:\\Program Files\\Java']) {
+    if (!existsSync(root)) continue;
+    for (const dir of readdirSync(root).filter(d => /^(jdk|jre)-?21/.test(d)).sort().reverse()) found.push(join(root, dir, 'bin', 'java.exe'));
+  }
+  return found;
+}
 const java = process.env.JAVA_BIN || [
-  '/opt/homebrew/opt/openjdk@21/bin/java', '/usr/local/opt/openjdk@21/bin/java',
+  '/opt/homebrew/opt/openjdk@21/bin/java', '/usr/local/opt/openjdk@21/bin/java', ...windowsJavas(),
 ].find(existsSync) || 'java';
 console.log('\nJoin from Minecraft Java 1.21.1: Multiplayer > Direct Connection > localhost:25565');
 console.log('Wait for "Done" below, then open Start Bots.command.');
-console.log('To watch: enter "gamemode spectator YOUR_USERNAME" in this server terminal.');
+console.log('To watch: enter "gamemode spectator YOUR_USERNAME" here, or run: npm run cmd -- gamemode spectator YOUR_USERNAME');
 console.log('To shut down cleanly: type stop in this server terminal.\n');
-const child = spawn(java, ['-Xms1G', '-Xmx3G', '-jar', 'server.jar', 'nogui'], { cwd: serverDirectory, stdio: 'inherit' });
+const child = spawn(java, ['-Xms1G', '-Xmx3G', '-jar', 'server.jar', 'nogui'], { cwd: serverDirectory, stdio: ['pipe', 'inherit', 'inherit'] });
 child.on('error', error => { console.error(`Cannot start Java: ${error.message}`); process.exitCode = 1; });
-child.on('exit', code => { process.exitCode = code || 0; });
+child.on('exit', code => { process.exitCode = code || 0; clearInterval(inboxTimer); process.stdin.unref?.(); });
+// Console input comes from this terminal and from the local inbox file used by `npm run cmd`.
+process.stdin.pipe(child.stdin, { end: false });
+writeFileSync(inboxPath, '');
+let inboxRead = 0;
+const inboxTimer = setInterval(() => {
+  const text = readFileSync(inboxPath, 'utf8');
+  if (text.length <= inboxRead) return;
+  child.stdin.write(text.slice(inboxRead));
+  inboxRead = text.length;
+}, 250);
