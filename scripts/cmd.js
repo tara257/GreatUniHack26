@@ -8,7 +8,7 @@ export function sendCommands(commands) {
   appendFileSync(inboxPath, commands.map(command => `${command.replace(/^\//, '').trim()}\n`).join(''));
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const command = process.argv.slice(2).join(' ').trim();
   if (!command) {
     console.log('Usage: npm run cmd -- <server command>   e.g. npm run cmd -- gamemode creative b_caul');

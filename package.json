@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Independent role-based Minecraft agents building a house together through communication outages.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "setup:server": "node scripts/setup-server.js",
@@ -19,12 +19,21 @@
     "comms:server": "node --env-file-if-exists=.env scripts/comms-server.js",
     "comms:agent": "node --env-file-if-exists=.env scripts/sim-agent.js",
     "comms:demo": "node scripts/comms-demo.js",
-    "comms:control": "node scripts/comms-control.js"
+    "comms:control": "node scripts/comms-control.js",
+    "build:dashboard": "vite build --config dashboard/vite.config.js",
+    "dashboard": "npm run build:dashboard && npm run comms:server"
   },
   "dependencies": {
+    "lucide-react": "1.70.0",
     "mineflayer": "4.39.0",
     "mineflayer-pathfinder": "2.4.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "vec3": "0.1.10",
     "ws": "8.22.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.2.1",
+    "vite": "8.3.6"
   }
 }

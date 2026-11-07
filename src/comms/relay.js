@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { VERSION, LIMITS, STATE_TYPES, compareState, ProtocolError, requireThat, validateMessage, canonical, validId, object } from './protocol.js';
+import { allowLocalDashboardSession, serveDashboard } from './dashboard-http.js';
 
 const equalToken=(a,b)=>{
   if(typeof a!=='string')return false;
@@ -23,6 +24,19 @@ export function createRelay(options={}) {
   }
   const serverId=randomUUID(),agents=new Map(),records=new Map(),observers=new Set(),disabledLinks=new Set();
   let partitions=null,closing=false,timer,pingTimer,revision=0,dirty=false;
+  const isolatedIds=new Set();
+  if(config.initialFaults) {
+    const {isolatedIds:ids=[],groups=[],disabledPairs=[]}=config.initialFaults;
+    requireThat(Array.isArray(ids) && ids.length<=config.maxAgents && ids.every(validId),'Invalid saved isolation policy');
+    requireThat(Array.isArray(groups) && groups.every(g=>Array.isArray(g) && g.length && g.every(validId)) &&
+      groups.flat().length<=config.maxAgents && new Set(groups.flat()).size===groups.flat().length,'Invalid saved partition policy');
+    requireThat(Array.isArray(disabledPairs) && disabledPairs.length<=config.maxAgents**2 &&
+      disabledPairs.every(p=>Array.isArray(p) && p.length===2 && p.every(validId) && p[0]!==p[1]),'Invalid saved link policy');
+    for(const id of ids)isolatedIds.add(id);
+    if(groups.length)partitions=new Map(groups.flatMap((g,i)=>g.map(id=>[id,String(i)])));
+    for(const [a,b] of disabledPairs)disabledLinks.add(pairKey(a,b));
+  }
+  let runId=randomUUID(),runStartedAt=Date.now();
   const events=[];
   const counters={accepted:0,delivered:0,expired:0,rejected:0,staleRejected:0};
   const wss=new WebSocketServer({noServer:true,maxPayload:LIMITS.maxPayloadBytes,perMessageDeflate:false});
@@ -56,6 +70,11 @@ export function createRelay(options={}) {
     return reasons;
   }
   function selfLink(a) { return {isolated:a.isolated,partition:partitions?(partitions.get(a.id) ?? 'unassigned'):null}; }
+  function faultPolicy() {
+    const groups=new Map();
+    for(const [id,group] of partitions || []){if(!groups.has(group))groups.set(group,[]);groups.get(group).push(id);}
+    return {isolatedIds:[...isolatedIds],groups:[...groups.values()],disabledPairs:[...disabledLinks].map(JSON.parse)};
+  }
   function links() {
     return [...agents.keys()].flatMap((a,i,ids)=>ids.slice(i+1).map(b=>{
       const blockedBy=linkReasons(a,b),transportAvailable=[a,b].every(id=>agents.get(id).ws?.readyState===WebSocket.OPEN);
@@ -72,9 +91,9 @@ export function createRelay(options={}) {
   }
   function snapshot() {
     const now=Date.now();
-    return {v:VERSION,serverId,revision,at:now,counters:{...counters},
+    return {v:VERSION,serverId,runId,runStartedAt,revision,at:now,counters:{...counters},
       limits:{...LIMITS,maxAgents:config.maxAgents,maxPendingPerAgent:config.maxPendingPerAgent,maxRecords:config.maxRecords},
-      partitionActive:partitions!==null,
+      partitionActive:partitions!==null,faults:faultPolicy(),
       agents:[...agents.values()].map(a=>({id:a.id,
         connection:{state:a.ws?'connected':'disconnected',connectedAt:a.connectedAt,disconnectedAt:a.disconnectedAt,
           lastSeenAt:a.lastSeenAt,lastPongAt:a.lastPongAt,lastDisconnect:a.lastDisconnect},
@@ -163,6 +182,7 @@ export function createRelay(options={}) {
     sweep();
   }
   function networkChanged(kind,details,previous) {
+    config.onFaultChange?.(faultPolicy());
     changed(kind,{actor:'operator',...details});
     const before=new Map(previous.map(link=>[pairKey(link.a,link.b),link]));
     for(const link of links()) {
@@ -176,6 +196,7 @@ export function createRelay(options={}) {
     requireThat(typeof isolated==='boolean','isolated must be boolean');
     const a=agent(id);if(a.isolated===isolated)return;
     const previous=links();a.isolated=isolated;
+    if(isolated)isolatedIds.add(id);else isolatedIds.delete(id);
     networkChanged(isolated?'isolation-enabled':'isolation-disabled',{agentId:id},previous);
   }
   function setPartitions(groups) {
@@ -195,9 +216,17 @@ export function createRelay(options={}) {
     networkChanged(enabled?'pair-enabled':'pair-disabled',{a,b},previous);
   }
   function heal() {
-    const previous=links();partitions=null;disabledLinks.clear();
+    const previous=links();partitions=null;disabledLinks.clear();isolatedIds.clear();
     for(const a of agents.values())a.isolated=false;
     networkChanged('network-restored',{},previous);
+  }
+  function resetSimulation() {
+    const previous=links();partitions=null;disabledLinks.clear();isolatedIds.clear();
+    for(const a of agents.values())a.isolated=false;
+    for(const key of Object.keys(counters))counters[key]=0;
+    events.length=0;runId=randomUUID();runStartedAt=Date.now();
+    // Keep accepted queues, deduplication and observations. A new run never rewinds Minecraft.
+    networkChanged('simulation-reset',{runId,preservedPendingMessages:true},previous);
   }
   function json(res,status,body) { res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(body)); }
   function readBody(req) {
@@ -215,15 +244,21 @@ export function createRelay(options={}) {
   const server=createServer(async(req,res)=>{
     const path=new URL(req.url,'http://relay.local').pathname;
     if(req.method==='GET' && path==='/health')return json(res,200,{ok:true,service:'Autonomous Colony relay',v:VERSION,serverId});
+    if(req.method==='POST' && path==='/dashboard/session') {
+      if(!allowLocalDashboardSession(req,config.host,server.address().port))return json(res,403,{error:'LOCAL_ORIGIN_REQUIRED'});
+      req.resume();return json(res,200,{token:config.operatorToken});
+    }
+    if(await serveDashboard(req,res,path))return;
     if(!equalToken(req.headers.authorization,`Bearer ${config.operatorToken}`))return json(res,401,{error:'UNAUTHORIZED'});
     try {
       if(req.method==='GET' && path==='/api/state')return json(res,200,snapshot());
-      if(req.method==='POST' && ['/api/isolation','/api/partitions','/api/links','/api/heal'].includes(path)) {
+      if(req.method==='POST' && ['/api/isolation','/api/partitions','/api/links','/api/heal','/api/reset'].includes(path)) {
         const body=await readBody(req); requireThat(object(body),'Expected an object');
         if(path==='/api/isolation')setIsolation(body.agentId,body.isolated);
         if(path==='/api/partitions')setPartitions(body.groups);
         if(path==='/api/links')setLink(body.a,body.b,body.enabled);
         if(path==='/api/heal')heal();
+        if(path==='/api/reset')resetSimulation();
         return json(res,200,snapshot());
       }
       json(res,404,{error:'NOT_FOUND'});
@@ -267,7 +302,7 @@ export function createRelay(options={}) {
           const existing=agents.get(input.agentId);
           if(existing?.ws) { fail(ws,new ProtocolError('ID_IN_USE','Agent ID already has a connection',true));ws.close(1008,'ID in use');return; }
           if(!existing && agents.size>=config.maxAgents)throw new ProtocolError('AGENT_LIMIT','Agent registry is full');
-          registered=existing || {id:input.agentId,isolated:false,pending:new Map(),reports:{},latestState:{},minecraft:null,lastHeartbeatAt:null};
+          registered=existing || {id:input.agentId,isolated:isolatedIds.has(input.agentId),pending:new Map(),reports:{},latestState:{},minecraft:null,lastHeartbeatAt:null};
           Object.assign(registered,{ws,sessionId:randomUUID(),connectedAt:Date.now(),disconnectedAt:null,lastSeenAt:Date.now(),lastPongAt:null});
           agents.set(registered.id,registered);clearTimeout(registrationTimer);
           changed('agent-connected',{agentId:registered.id});
@@ -290,7 +325,7 @@ export function createRelay(options={}) {
     });
   }
   return {
-    serverId,operatorToken:config.operatorToken,snapshot,setIsolation,setPartitions,setLink,heal,
+    serverId,operatorToken:config.operatorToken,snapshot,setIsolation,setPartitions,setLink,heal,resetSimulation,
     async listen() {
       await new Promise((resolve,reject)=>{
         server.once('error',reject);

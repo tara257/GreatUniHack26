@@ -11,3 +11,4 @@ node_modules/
 .state/
 .test-state/
 *.log
+dashboard/dist/

@@ -2,11 +2,11 @@
 
 This is an optional communication service for independent Minecraft agents. It relays observations, requests, and completion reports. It does not choose actions, assign tasks, transfer Minecraft items, elect a leader, resolve conflicting beliefs, or operate Minecraft connections.
 
-The implementation includes a Node.js/`ws` relay, a Node.js agent adapter, independent simulated agents, automated tests, and operator endpoints for a future React dashboard. The five Minecraft role bots now use `MinecraftChannel` by default to publish observations and learn discoveries through this relay. The old chat transport requires explicit `COMMS_TRANSPORT=chat`; WebSocket failure never triggers a chat fallback. There is no dashboard UI yet.
+The implementation includes a Node.js/`ws` relay, a Node.js agent adapter, independent simulated agents, automated tests, and a React dashboard served at `/`, and authenticated operator endpoints. The five Minecraft role bots now use `MinecraftChannel` by default to publish observations and learn discoveries through this relay. The old chat transport requires explicit `COMMS_TRANSPORT=chat`; WebSocket failure never triggers a chat fallback.
 
 ## Run and test
 
-Use the repository's Node.js 22+ environment:
+Use the repository's Node.js 22.12+ environment:
 
 ```sh
 npm ci
@@ -44,7 +44,7 @@ Isolation affects **peer data delivery in both directions**. Registration, trans
 
 ## Connection and frame format
 
-Connect to `/agents` using a JSON-text WebSocket. When configured, include the HTTP header `Authorization: Bearer <COMMS_AGENT_TOKEN>`. Node's `ws` supports this header. Browser pages are not admitted to the agent endpoint; the future browser dashboard uses `/observe` instead.
+Connect to `/agents` using a JSON-text WebSocket. When configured, include the HTTP header `Authorization: Bearer <COMMS_AGENT_TOKEN>`. Node's `ws` supports this header. Browser pages are not admitted to the agent endpoint; the browser dashboard uses `/observe` instead.
 
 Every frame has `v: 1` and `kind`. Register within five seconds:
 
@@ -157,7 +157,7 @@ Receipt ACKs say that the consumer handler returned successfully; they do not me
 - Default server limits: 16 KiB per incoming frame, 64 retained agent IDs, 128 pending messages per recipient, and 4096 retained accepted-message records. Publish deduplication records live until the delivery deadline plus 60 seconds. Duplicate-ID protection is bounded by that window.
 - Queue admission is atomic across broadcast recipients. If any destination is full, the entire new publish is rejected with retryable `QUEUE_FULL`; it is not partially relayed. Expiry is reported explicitly. Slow sockets are closed with code 1013 so unacknowledged deliveries can replay on reconnection.
 - The adapter has a bounded 256-message local outbox while disconnected or awaiting acceptance. Its separate local deadline starts at enqueue and uses `ttlMs`. A local timeout may occur after the server accepted a message but its ACK was lost; `mayHaveBeenAccepted` exposes that uncertainty. Server TTL starts at server acceptance, so the two deadlines are intentionally distinct.
-- **Relay storage is in memory. A relay restart loses its registry, fault policy, pending accepted messages, and deduplication history.** The new `serverId` makes the epoch change visible. Re-advertise each agent's own current facts and request missing peer facts on reconnect. Durable delivery across relay-process loss requires a future persistence layer.
+- **Relay delivery storage is in memory. A relay restart loses its registry, pending accepted messages, and deduplication history.** The CLI separately persists fault policy to `.state/comms-network-PORT.json` and loads it before admitting agents. The library is memory-only unless its caller supplies `initialFaults` and `onFaultChange`. The new `serverId` makes the epoch change visible. Re-advertise each agent's own current facts and request missing peer facts on reconnect. Durable delivery across relay-process loss requires a future persistence layer.
 - The adapter's received-ID cache is bounded to 4096 entries for at most six minutes, retained across socket reconnects but not adapter-process restarts. Persist semantic task/resource state in each agent's own storage if it must survive process loss.
 
 ## Control frames and errors
@@ -176,7 +176,7 @@ Important error codes: `ID_IN_USE`, `INVALID_MESSAGE`, `INVALID_JSON`, `INVALID_
 
 State admission also returns non-retryable `STALE_STATE` and `STATE_CONFLICT`. Publishing a fresh observation with a new version is an agent action; repeatedly retrying a rejected old version cannot make it current.
 
-## Operator API and future React integration
+## Operator API and React dashboard
 
 `GET /health` is public and returns service/version/server epoch only. All `/api/*` endpoints require `Authorization: Bearer <operator token>`.
 
@@ -187,6 +187,7 @@ State admission also returns non-retryable `STALE_STATE` and `STATE_CONFLICT`. P
 | `POST /api/partitions` | `{"groups":[["Ember","Flint"],["Moss"]]}`. All named IDs must already be known and occur at most once. |
 | `POST /api/partitions` | `{"groups":[]}` heals group partitions only. |
 | `POST /api/links` | `{"a":"Ember","b":"Moss","enabled":false}` blocks a bidirectional pair; use `true` to restore that pair. |
+| `POST /api/reset` | `{}` starts a new communication run: clears all faults, counters and recent events, generates a new `runId`/`runStartedAt`; preserves sockets, observations, queued messages, deduplication, source versions and Minecraft state. |
 | `POST /api/heal` | `{}` manually clears all isolation flags, partitions, and disabled pairs. It does not reconnect dead sockets or change Minecraft presence. |
 
 With partitions enabled, agents omitted from the groups—including newly registered IDs—belong to an `unassigned` group. They can communicate with one another but not with assigned groups. Isolation and pairwise disabled links compose with the partition rule.
@@ -203,15 +204,21 @@ curl -s -X POST http://127.0.0.1:8090/api/isolation \
   -d '{"agentId":"Moss","isolated":true}'
 ```
 
-Snapshots contain server epoch/revision/time, counters, limits, retained agent records, pairwise link reasons, and the latest 200 operational events. Each agent has `connection`, `heartbeat`, `communication`, `minecraft`, `reports`, and `pendingMessages`. Reports include the sender's `reportedAt`, server `receivedAt`, computed `ageMs`, `stale`, and (for versioned state) `stateVersion`. Display staleness and provenance; do not label old reports as current truth. For each pair, `policyAllowed` means no logical fault blocks it; `transportAvailable` means both registered sockets are open; `canCommunicate` requires **both**. `blockedBy` lists policy reasons separately from transport state. An accepted queued message can still outlive its sender socket.
+Snapshots contain server epoch/revision/time, `runId`, `runStartedAt`, saved `faults: {isolatedIds, groups, disabledPairs}`, counters, limits, retained agent records, pairwise link reasons, and the latest 200 operational events. Each agent has `connection`, `heartbeat`, `communication`, `minecraft`, `reports`, and `pendingMessages`. Reports include the sender's `reportedAt`, server `receivedAt`, computed `ageMs`, `stale`, and (for versioned state) `stateVersion`. Display staleness and provenance; do not label old reports as current truth. For each pair, `policyAllowed` means no logical fault blocks it; `transportAvailable` means both registered sockets are open; `canCommunicate` requires **both**. `blockedBy` lists policy reasons separately from transport state. An accepted queued message can still outlive its sender socket.
 
-The server CLI logs structured events to stdout with `at`, `serverId`, and `revision`: isolation enabled/disabled, partitions changed/cleared, pair enabled/disabled, effective link failed/restored, whole-network restored, agent connected/disconnected, message accepted/sent/delivered/expired, and state rejected. `message-sent.attempt` distinguishes retries; `message-delivered` is a recipient ACK. The bounded operator event history is for recent inspection, not durable auditing. Capture stdout to a local log if a complete run history is needed; relay restart resets its in-memory history. The `createRelay({onEvent})` hook allows an external log sink.
+The server CLI logs structured events to stdout with `at`, `serverId`, and `revision`: isolation enabled/disabled, partitions changed/cleared, pair enabled/disabled, effective link failed/restored, whole-network restored, simulation reset, agent connected/disconnected, message accepted/sent/delivered/expired, and state rejected. `message-sent.attempt` distinguishes retries; `message-delivered` is a recipient ACK. The bounded operator event history is for recent inspection, not durable auditing. Capture stdout to a local log if a complete run history is needed; relay restart resets its in-memory history. The `createRelay({onEvent})` hook allows an external log sink.
 
 Use `npm run comms:control -- status`, `isolate ID`, `restore ID`, `partition A,B C,D E`, `link A B off`, or `heal` from an operator terminal with `COMMS_OPERATOR_TOKEN` set. `COMMS_HTTP_URL` optionally selects a different relay. `restore ID` removes just that isolation; `heal` clears every fault layer. The CLI does not load `.env`, helping keep operator credentials out of the agent environment.
 
 For live observation, open `/observe`, then send `{"v":1,"kind":"SUBSCRIBE","token":"operator-token"}`. You receive `SNAPSHOT` frames initially, after state changes, and periodically for age/staleness refresh. Observer sockets cannot publish agent messages or mutate faults. Use the authenticated HTTP endpoints for controls.
 
-A future React client should use the browser's native `WebSocket` API, not the Node-only `ws` package ([ws documentation](https://github.com/websockets/ws)). Keep its operator token separate from agents. The server does not enable cross-origin HTTP access; use a development proxy or same-origin deployment for dashboard REST calls. No React components have been implemented here.
+The React client in `dashboard/` uses the browser's native WebSocket API; `ws` remains server-side. Build with `npm run build:dashboard`; the relay serves the generated `dashboard/dist/` assets at `/`. `npm run dashboard` builds and starts the relay. The same-origin UI uses the authenticated HTTP endpoints for every fault control, checks the response, then renders the resulting snapshot. It reconnects automatically and ignores older snapshot revisions within the same server epoch. No mock agent data is included in the dashboard.
+
+For loopback deployments, `POST /dashboard/session` returns an operator token only when the bind address and request hostname are loopback, the request port matches the relay, the `Origin` exactly matches that host/port, and `X-Colony-Dashboard: 1` is supplied. Cross-origin requests are not enabled. The browser holds this token in memory and sends it in the observer handshake and Bearer headers, never in URLs or the frontend bundle. Remote hosts use manual operator authentication; agents never receive this token.
+
+The run reset preserves previously accepted pending messages, so acknowledgements after reset can count deliveries for messages accepted before the new run. Counters describe activity since reset, not a closed cohort of messages. Snapshot revision stays monotonic across run resets, and `simulation-reset` starts the new event history.
+
+The builder publishes an optional `STATUS_UPDATE.payload.house`: `{blueprint, observedAt, origin: {x,y,z}, placed, required, percent, unknown, phases: [{name,placed,required}], cells: [{x,y,z,status}]}`. Cell positions are relative to `origin`; status is `complete`, `missing`, `obstructed` or `unknown`. This is the builder's observed blueprint, not authoritative server-world state. Unknown blocks are included in the denominator and flagged, giving a lower-bound completion estimate. The UI labels stale surveys, and aggregates resources only from fresh connected Minecraft reports; it does not claim to know chest contents.
 
 ## Minecraft developer integration
 

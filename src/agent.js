@@ -11,6 +11,7 @@ import { ROSTER, TEAM_NAMES } from './roster.js';
 import { run, Cancelled } from './skills.js';
 import { isProtected } from './world.js';
 import { reportOnce, keyOf } from './roles/common.js';
+import { observeHouse } from './house-telemetry.js';
 
 const { pathfinder, Movements, goals: { GoalNear } } = pathfinderModule;
 const name = process.argv[2];
@@ -66,6 +67,7 @@ function observeForPeers() {
   const position=bot?.entity?.position;
   return {resources,status:{minecraft:{connected:minecraftConnected && !stopping},
     task:currentTask.slice(0,256),role:roleName,
+    ...(roleName==='builder' && minecraftConnected?{house:observeHouse(bot)}:{}),
     ...(Number.isFinite(bot?.health)?{health:Math.max(0,Math.min(20,bot.health))}:{}),
     ...(Number.isFinite(bot?.food)?{hunger:Math.max(0,Math.min(20,bot.food))}:{}),
     ...(position && [position.x,position.y,position.z].every(Number.isFinite)?{position:{x:position.x,y:position.y,z:position.z}}:{}),
@@ -107,6 +109,7 @@ function connect() {
   bot.loadPlugin(pathfinder);
   bot.on('spawn', () => {
     spawned = true;minecraftConnected=true;
+    currentTask = state.running ? 'Starting work' : 'Paused — ready to start';
     const movements = new Movements(bot);
     movements.allow1by1towers = false;
     movements.allowParkour = false;
@@ -139,6 +142,7 @@ function connect() {
     if (message.startsWith('!team ')) control(message.slice(6).trim().toLowerCase(), sender);
   });
   bot.on('death', () => {
+    currentTask = 'Respawning';
     generation++; spawned = false; activeTask = null; state.deaths++;
     if (bot.entity) channel.publish('Danger', bot.entity.position);
     save(); log('Died. Saved the location; respawning with memory intact.');
@@ -146,6 +150,7 @@ function connect() {
   bot.on('kicked', reason => log(`Server kicked me: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`));
   bot.on('error', error => log(`Connection error: ${error.message}`));
   bot.on('end', () => {
+    currentTask = stopping ? 'Stopped' : 'Reconnecting to Minecraft';
     generation++; spawned = false; minecraftConnected=false;activeTask = null; chatQueue.length = 0; memory.window = null;
     clearInterval(taskTimer); clearInterval(chatTimer);
     if(transport==='websocket')channel.tick();
