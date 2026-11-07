@@ -18,7 +18,8 @@
     "boost": "node scripts/boost.js",
     "comms:server": "node --env-file-if-exists=.env scripts/comms-server.js",
     "comms:agent": "node --env-file-if-exists=.env scripts/sim-agent.js",
-    "comms:demo": "node scripts/comms-demo.js"
+    "comms:demo": "node scripts/comms-demo.js",
+    "comms:control": "node scripts/comms-control.js"
   },
   "dependencies": {
     "mineflayer": "4.39.0",

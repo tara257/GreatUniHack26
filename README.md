@@ -19,13 +19,39 @@ All five agents start by default; set `TEAM_ROLES` (see `.env.example`) to run a
 The standalone Node.js WebSocket relay is ready for simulated-agent testing. It supports unique agent IDs, the six standard message types, direct/broadcast delivery, selected-agent isolation, group partitions, link failures, bounded queues, acknowledgements, expiry, and reconnection. It keeps relay connectivity separate from reported Minecraft presence. Agent decisions remain local.
 
 ```sh
-npm run comms:demo       # Three independent simulated processes, partition and heal
+npm run comms:demo       # Five independent simulated processes, three partitions, then heal
 npm run comms:server     # Persistent relay on 127.0.0.1:8090
 npm run comms:agent -- Ember  # Run each simulated agent in a separate terminal
 npm run test:comms
 ```
 
 See the **[message protocol and Minecraft integration guide](docs/communication-protocol.md)** for schemas, operator controls, delivery guarantees, and future dashboard endpoints. Queues are in memory; relay-process restart recovery requires agents to re-advertise their own facts. This initial implementation has no dashboard UI and does not replace the role agents' existing Minecraft chat transport.
+
+The extended failure simulator tracks which links can actually exchange messages, supports layered isolation/partitions and a manual `heal`, and logs failures, restoration, send attempts, and acknowledgements. State messages carry source-owned versions; both the relay and client prevent older versions from overwriting newer observations. Clients re-advertise their own latest published state after reconnects, topology changes, or a new peer joining. No server assigns agent actions.
+
+For manual testing, start the relay and simulated agents, then use a separate **operator terminal**:
+
+```sh
+export COMMS_OPERATOR_TOKEN='paste-the-token-printed-by-the-relay'
+npm run comms:control -- status
+npm run comms:control -- isolate Wren_Scout
+npm run comms:control -- restore Wren_Scout
+npm run comms:control -- partition Flint_Miner,Moss_Lumberjack Ember_Builder,Sage_Crafter Wren_Scout
+npm run comms:control -- heal
+```
+
+All named agents must have registered first. Start them with `npm run comms:agent -- NAME` in separate terminals. These controls affect simulated WebSocket links, not Minecraft connections. The relay prints timestamped JSON events; the status command shows readable agent/link tables. Restart an already running relay to load code changes; a restart clears its in-memory queues and fault settings.
+
+## Updating a teammate's checkout
+
+The old bots have been replaced by the five role bots above. Before working on an existing checkout, save local changes and run:
+
+```sh
+git pull --ff-only
+npm ci
+```
+
+`npm ci` installs the versions in the lockfile. `npm run bots` then starts the five role bots by default. Stop an old bot process before starting the replacement team; pulling files does not update an already running process. The WebSocket simulation remains separate from those bots until integration.
 
 ## Start on this Mac
 

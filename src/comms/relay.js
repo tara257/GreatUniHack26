@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
-import { VERSION, LIMITS, ProtocolError, requireThat, validateMessage, canonical, validId, object } from './protocol.js';
+import { VERSION, LIMITS, STATE_TYPES, compareState, ProtocolError, requireThat, validateMessage, canonical, validId, object } from './protocol.js';
 
 const equalToken=(a,b)=>{
   if(typeof a!=='string')return false;
@@ -24,12 +24,14 @@ export function createRelay(options={}) {
   const serverId=randomUUID(),agents=new Map(),records=new Map(),observers=new Set(),disabledLinks=new Set();
   let partitions=null,closing=false,timer,pingTimer,revision=0,dirty=false;
   const events=[];
-  const counters={accepted:0,delivered:0,expired:0,rejected:0};
+  const counters={accepted:0,delivered:0,expired:0,rejected:0,staleRejected:0};
   const wss=new WebSocketServer({noServer:true,maxPayload:LIMITS.maxPayloadBytes,perMessageDeflate:false});
   function changed(kind,data={}) {
     revision++; dirty=true;
-    events.push({at:Date.now(),kind,...data});
+    const event={at:Date.now(),serverId,revision,kind,...data};
+    events.push(event);
     if(events.length>200)events.shift();
+    config.onEvent?.(event);
   }
   function send(ws,data) {
     if (!ws || ws.readyState!==WebSocket.OPEN) return false;
@@ -54,6 +56,17 @@ export function createRelay(options={}) {
     return reasons;
   }
   function selfLink(a) { return {isolated:a.isolated,partition:partitions?(partitions.get(a.id) ?? 'unassigned'):null}; }
+  function links() {
+    return [...agents.keys()].flatMap((a,i,ids)=>ids.slice(i+1).map(b=>{
+      const blockedBy=linkReasons(a,b),transportAvailable=[a,b].every(id=>agents.get(id).ws?.readyState===WebSocket.OPEN);
+      return {a,b,blockedBy,policyAllowed:blockedBy.length===0,transportAvailable,
+        canCommunicate:transportAvailable && blockedBy.length===0};
+    }));
+  }
+  function notifyLinks() {
+    // Only a local transport notification: no peer observations or task instructions.
+    for(const a of agents.values())send(a.ws,frame('LINK_STATE',selfLink(a)));
+  }
   function report(value,now) {
     return value?{...value,ageMs:now-value.receivedAt,stale:now-value.receivedAt>config.statusStaleMs}:null;
   }
@@ -70,8 +83,7 @@ export function createRelay(options={}) {
         minecraft:a.minecraft?report(a.minecraft,now):{value:'unknown',reportedAt:null,receivedAt:null,ageMs:null,stale:true},
         reports:Object.fromEntries(Object.entries(a.reports).map(([type,r])=>[type,report(r,now)])),
         pendingMessages:a.pending.size})),
-      links:[...agents.keys()].flatMap((a,i,ids)=>ids.slice(i+1).map(b=>({a,b,blockedBy:linkReasons(a,b),
-        transportAvailable:!!agents.get(a).ws && !!agents.get(b).ws}))),recentEvents:[...events]};
+      links:links(),recentEvents:[...events]};
   }
   function outcome(record,recipient,status) {
     record.deliveries.set(recipient,status);
@@ -88,6 +100,8 @@ export function createRelay(options={}) {
       if(pending.sessionId===a.sessionId && now-pending.lastSentAt<config.ackRetryMs)continue;
       if(send(a.ws,frame('MESSAGE',{message:r.message,relay:{serverId,acceptedAt:r.acceptedAt,expiresAt:r.expiresAt}}))) {
         pending.sessionId=a.sessionId; pending.lastSentAt=now;
+        pending.attempts=(pending.attempts || 0)+1;
+        changed('message-sent',{from:r.message.from,to:a.id,id:r.message.id,type:r.message.type,attempt:pending.attempts});
       }
     }
     for(const [key,r] of records)if(now>r.expiresAt+config.dedupeRetentionMs)records.delete(key);
@@ -114,6 +128,17 @@ export function createRelay(options={}) {
       if(old.fingerprint!==fingerprint)throw new ProtocolError('ID_REUSE','A message ID cannot be reused for different content');
       send(a.ws,frame('PUBLISH_ACK',{id:message.id,status:'duplicate',expiresAt:old.expiresAt,deliveries:Object.fromEntries(old.deliveries)})); return;
     }
+    const isState=STATE_TYPES.includes(message.type),previous=a.latestState[message.type];
+    const order=isState?compareState(message,previous):1;
+    if(isState && order<0) {
+      counters.staleRejected++;
+      changed('state-rejected',{from:a.id,id:message.id,type:message.type,reason:'stale',stateVersion:message.stateVersion});
+      throw new ProtocolError('STALE_STATE','An older state update cannot replace a newer observation');
+    }
+    if(isState && order===0 && canonical(message.payload)!==canonical(previous.payload)) {
+      changed('state-rejected',{from:a.id,id:message.id,type:message.type,reason:'version-conflict',stateVersion:message.stateVersion});
+      throw new ProtocolError('STATE_CONFLICT','The same state version cannot describe different data');
+    }
     const recipients=message.to==='*'?[...agents.keys()].filter(id=>id!==a.id):message.to==='@relay'?[]:[message.to];
     for(const id of recipients)if(!agents.has(id))throw new ProtocolError('UNKNOWN_RECIPIENT',`Register recipient ${id} before publishing to it`,true);
     if(records.size>=config.maxRecords || recipients.some(id=>agents.get(id).pending.size>=config.maxPendingPerAgent)) {
@@ -123,24 +148,35 @@ export function createRelay(options={}) {
       deliveries:new Map(recipients.map(id=>[id,'queued']))};
     records.set(key,record);
     for(const id of recipients)agents.get(id).pending.set(key,{record,lastSentAt:0,sessionId:null});
-    a.reports[message.type]={payload:message.payload,reportedAt:message.sentAt,receivedAt:acceptedAt};
+    if(!isState || order>0) {
+      a.reports[message.type]={payload:message.payload,reportedAt:message.sentAt,receivedAt:acceptedAt,
+        ...(message.stateVersion?{stateVersion:message.stateVersion}:{})};
+      if(isState)a.latestState[message.type]=message;
+    }
     if(message.type==='HEARTBEAT')a.lastHeartbeatAt=acceptedAt;
-    if(message.type==='STATUS_UPDATE' && message.payload.minecraft) {
+    if(message.type==='STATUS_UPDATE' && order>0 && message.payload.minecraft) {
       a.minecraft={value:message.payload.minecraft.connected?'connected':'disconnected',reportedAt:message.sentAt,receivedAt:acceptedAt};
     }
     counters.accepted++;
-    changed('message-accepted',{from:a.id,id:message.id,type:message.type,recipients});
+    changed('message-accepted',{from:a.id,id:message.id,type:message.type,recipients,sentAt:message.sentAt,stateVersion:message.stateVersion});
     send(a.ws,frame('PUBLISH_ACK',{id:message.id,status:'accepted',expiresAt:record.expiresAt,deliveries:Object.fromEntries(record.deliveries)}));
     sweep();
   }
-  function networkChanged() {
-    changed('network-changed');
-    for(const a of agents.values())send(a.ws,frame('LINK_STATE',selfLink(a)));
+  function networkChanged(kind,details,previous) {
+    changed(kind,{actor:'operator',...details});
+    const before=new Map(previous.map(link=>[pairKey(link.a,link.b),link]));
+    for(const link of links()) {
+      const old=before.get(pairKey(link.a,link.b));
+      if(old.canCommunicate!==link.canCommunicate)changed(link.canCommunicate?'link-restored':'link-failed',link);
+    }
+    notifyLinks();
     sweep();
   }
   function setIsolation(id,isolated) {
     requireThat(typeof isolated==='boolean','isolated must be boolean');
-    agent(id).isolated=isolated; networkChanged();
+    const a=agent(id);if(a.isolated===isolated)return;
+    const previous=links();a.isolated=isolated;
+    networkChanged(isolated?'isolation-enabled':'isolation-disabled',{agentId:id},previous);
   }
   function setPartitions(groups) {
     requireThat(Array.isArray(groups) && groups.every(Array.isArray),'groups must be arrays of agent IDs');
@@ -149,13 +185,19 @@ export function createRelay(options={}) {
       requireThat(group.length>0,'partition groups cannot be empty');
       for(const id of group) { agent(id); requireThat(!next.has(id),'an agent can occur in only one partition'); next.set(id,String(index)); }
     });
-    partitions=groups.length?next:null; networkChanged();
+    const previous=links();partitions=groups.length?next:null;
+    networkChanged(groups.length?'partitions-changed':'partitions-cleared',{groups},previous);
   }
   function setLink(a,b,enabled) {
     agent(a);agent(b);
     requireThat(a!==b && typeof enabled==='boolean','provide distinct a/b and boolean enabled');
-    const key=pairKey(a,b); if(enabled)disabledLinks.delete(key);else disabledLinks.add(key);
-    networkChanged();
+    const previous=links(),key=pairKey(a,b); if(enabled)disabledLinks.delete(key);else disabledLinks.add(key);
+    networkChanged(enabled?'pair-enabled':'pair-disabled',{a,b},previous);
+  }
+  function heal() {
+    const previous=links();partitions=null;disabledLinks.clear();
+    for(const a of agents.values())a.isolated=false;
+    networkChanged('network-restored',{},previous);
   }
   function json(res,status,body) { res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(body)); }
   function readBody(req) {
@@ -176,11 +218,12 @@ export function createRelay(options={}) {
     if(!equalToken(req.headers.authorization,`Bearer ${config.operatorToken}`))return json(res,401,{error:'UNAUTHORIZED'});
     try {
       if(req.method==='GET' && path==='/api/state')return json(res,200,snapshot());
-      if(req.method==='POST' && ['/api/isolation','/api/partitions','/api/links'].includes(path)) {
+      if(req.method==='POST' && ['/api/isolation','/api/partitions','/api/links','/api/heal'].includes(path)) {
         const body=await readBody(req); requireThat(object(body),'Expected an object');
         if(path==='/api/isolation')setIsolation(body.agentId,body.isolated);
         if(path==='/api/partitions')setPartitions(body.groups);
         if(path==='/api/links')setLink(body.a,body.b,body.enabled);
+        if(path==='/api/heal')heal();
         return json(res,200,snapshot());
       }
       json(res,404,{error:'NOT_FOUND'});
@@ -224,13 +267,13 @@ export function createRelay(options={}) {
           const existing=agents.get(input.agentId);
           if(existing?.ws) { fail(ws,new ProtocolError('ID_IN_USE','Agent ID already has a connection',true));ws.close(1008,'ID in use');return; }
           if(!existing && agents.size>=config.maxAgents)throw new ProtocolError('AGENT_LIMIT','Agent registry is full');
-          registered=existing || {id:input.agentId,isolated:false,pending:new Map(),reports:{},minecraft:null,lastHeartbeatAt:null};
+          registered=existing || {id:input.agentId,isolated:false,pending:new Map(),reports:{},latestState:{},minecraft:null,lastHeartbeatAt:null};
           Object.assign(registered,{ws,sessionId:randomUUID(),connectedAt:Date.now(),disconnectedAt:null,lastSeenAt:Date.now(),lastPongAt:null});
           agents.set(registered.id,registered);clearTimeout(registrationTimer);
           changed('agent-connected',{agentId:registered.id});
           send(ws,frame('REGISTERED',{agentId:registered.id,sessionId:registered.sessionId,serverId,
             heartbeatIntervalMs:config.heartbeatIntervalMs,limits:LIMITS,link:selfLink(registered)}));
-          sweep();return;
+          notifyLinks();sweep();return;
         }
         registered.lastSeenAt=Date.now();
         if(input.kind==='PUBLISH')publish(registered,input.message);
@@ -247,7 +290,7 @@ export function createRelay(options={}) {
     });
   }
   return {
-    serverId,operatorToken:config.operatorToken,snapshot,setIsolation,setPartitions,setLink,
+    serverId,operatorToken:config.operatorToken,snapshot,setIsolation,setPartitions,setLink,heal,
     async listen() {
       await new Promise((resolve,reject)=>{
         server.once('error',reject);

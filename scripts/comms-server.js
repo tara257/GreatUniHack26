@@ -4,6 +4,7 @@ const port=Number(process.env.COMMS_PORT || 8090);
 if(!Number.isInteger(port) || port<1 || port>65535)throw new Error('COMMS_PORT must be 1–65535');
 const relay=createRelay({port,host:process.env.COMMS_HOST || '127.0.0.1',
   agentToken:process.env.COMMS_AGENT_TOKEN || '',
+  onEvent:event=>console.log(JSON.stringify(event)),
   ...(process.env.COMMS_OPERATOR_TOKEN?{operatorToken:process.env.COMMS_OPERATOR_TOKEN}:{})});
 const urls=await relay.listen();
 console.log('Autonomous Colony communication relay');

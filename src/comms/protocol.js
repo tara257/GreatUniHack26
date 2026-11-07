@@ -1,5 +1,6 @@
 export const VERSION = 1;
 export const MESSAGE_TYPES = Object.freeze(['STATUS_UPDATE','RESOURCE_REQUEST','RESOURCE_UPDATE','TASK_COMPLETE','TASK_REQUEST','HEARTBEAT']);
+export const STATE_TYPES = Object.freeze(['STATUS_UPDATE','RESOURCE_UPDATE']);
 export const LIMITS = Object.freeze({ maxPayloadBytes: 16_384, defaultTtlMs: 60_000, maxTtlMs: 300_000 });
 export const validId = value => typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value);
 export const object = value => value !== null && typeof value==='object' && !Array.isArray(value);
@@ -22,6 +23,9 @@ export function validateMessage(input,from) {
   const ttlMs=input.ttlMs ?? LIMITS.defaultTtlMs;
   requireThat(Number.isInteger(ttlMs) && ttlMs>=50 && ttlMs<=LIMITS.maxTtlMs,'ttlMs must be 50–300000');
   requireThat(input.correlationId===undefined || text(input.correlationId,128),'invalid correlationId');
+  if(input.stateVersion!==undefined) requireThat(STATE_TYPES.includes(input.type) && object(input.stateVersion) &&
+    ['epoch','revision'].every(k=>Number.isSafeInteger(input.stateVersion[k]) && input.stateVersion[k]>0),
+    'stateVersion requires positive integer epoch and revision on a state update');
   const p=input.payload;
   requireThat(object(p),'payload must be an object');
   if (input.type==='STATUS_UPDATE') {
@@ -37,7 +41,18 @@ export function validateMessage(input,from) {
   if (input.type==='TASK_REQUEST') requireThat(text(p.requestId,128),'requestId is required');
   if (input.type==='HEARTBEAT' && p.uptimeMs!==undefined) requireThat(Number.isSafeInteger(p.uptimeMs) && p.uptimeMs>=0,'uptimeMs must be non-negative');
   return {id:input.id,type:input.type,from,to:input.to,sentAt:input.sentAt,ttlMs,
+    ...(input.stateVersion===undefined?{}:{stateVersion:{epoch:input.stateVersion.epoch,revision:input.stateVersion.revision}}),
     ...(input.correlationId===undefined?{}:{correlationId:input.correlationId}),payload:p};
+}
+
+// Compare one source's one state stream, never clocks or versions across agents.
+// Once a stream is versioned, legacy timestamp-only updates cannot replace it.
+export function compareState(next,previous) {
+  if(!previous)return 1;
+  const a=next.stateVersion,b=previous.stateVersion;
+  if(a && b)return Math.sign(a.epoch-b.epoch) || Math.sign(a.revision-b.revision);
+  if(a || b)return a?1:-1;
+  return Math.sign(next.sentAt-previous.sentAt);
 }
 
 // Stable equality for retries even when JSON object keys are in a different order.
