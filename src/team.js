@@ -5,14 +5,17 @@ import { createInterface } from 'node:readline';
 import { selectRoster } from './roster.js';
 
 const roster = selectRoster();
+const agentEnvironment={...process.env};
+delete agentEnvironment.COMMS_OPERATOR_TOKEN;delete agentEnvironment.OPERATOR_TOKEN;
 const children = roster.map(member => fork(new URL('./agent.js', import.meta.url), [member.name], {
-  stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+  stdio: ['ignore', 'inherit', 'inherit', 'ipc'],env:agentEnvironment,execArgv:[],
 }));
 
 console.log(`\nTeam starting: ${roster.map(m => `${m.name} (${m.role})`).join(', ')}.`);
 console.log('Minecraft chat: !team help');
 console.log('Terminal controls: start | pause | status | comms off | comms on | quit');
 console.log('Set TEAM_ROLES=all (or a comma-separated list) to change who joins.\n');
+console.log(`Peer transport: ${process.env.COMMS_TRANSPORT || 'websocket'}. Relay loss never pauses gameplay.`);
 const input = createInterface({ input: process.stdin, output: process.stdout });
 input.on('line', line => {
   const command = line.trim().toLowerCase();

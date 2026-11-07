@@ -1,6 +1,6 @@
-# GreatUniHack26 — Dragon Team
+# Autonomous Colony · GreatUniHack26
 
-Independent Minecraft agents working towards defeating the Ender Dragon, even when their team communication fails.
+Five independent Minecraft agents cooperate to build a house, even when their communication links fail.
 
 **Current milestone: a starter house.** Each agent has a role and runs its own perceive → decide → act loop using deterministic rules (no LLM, no central controller):
 
@@ -10,30 +10,80 @@ Independent Minecraft agents working towards defeating the Ender Dragon, even wh
 | Moss_Lumberjack | Lumberjack | Fells nearby trees, delivers logs; once storage holds enough logs, delivers planks instead. Builds the storage chest if none exists. |
 | Ember_Builder | Builder | Compares the house blueprint with the world, clears obstructions, places whatever it holds materials for, fetches the rest from storage, and switches to another part of the house when a material is missing. |
 | Sage_Crafter | Crafter | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
-| Wren_Scout | Scout | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over team chat. |
+| Wren_Scout | Scout | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over WebSockets. |
 
-All five agents start by default; set `TEAM_ROLES` (see `.env.example`) to run a subset, e.g. `TEAM_ROLES=miner,lumberjack,builder`. Nether progression, stronghold navigation and dragon combat are **not implemented yet**.
+All five agents start by default; set `TEAM_ROLES` (see `.env.example`) to run a subset, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 83-block starter house.
+
+## Live dashboard
+
+From the project folder, install packages and start the dashboard/relay:
+
+```sh
+npm ci
+npm run dashboard
+```
+
+Open **[Autonomous Colony](http://127.0.0.1:8090/)**. In two other terminals, run `npm run server` and `npm run bots` (reuse existing processes if already running). Join Java Edition **1.21.1**, server **localhost:25565**, and type `!team start` in chat. The dashboard is served by the relay on port 8090; there is no separate React development server to start.
+
+If the relay is already running, `npm run build:dashboard` rebuilds the UI; refresh the browser. Restart the relay after backend changes, and the bots after agent changes. `npm run dashboard` builds the UI and then starts the relay, so do not launch a second copy on the same port.
+
+- Five cards show separately reported Minecraft presence, relay/link status, task, inventory and observation age. Unknown or old observations are labelled, not filled with example data.
+- The graph shows real pairwise reachability. Amber dashed links are deliberately blocked; gray links have unavailable or unknown transport. Moving dots correspond to recorded send attempts.
+- House progress and the blueprint come from the builder's actual block survey. Unloaded blocks are marked unobserved. Resources sum fresh carried inventories only, excluding shared chests.
+- **Isolate** blocks one agent's peer links in both directions. **Create partition** assigns each agent to A/B/C. Restoring one isolation preserves other fault layers; **Restore network** clears all layers.
+- **Reset simulation** starts a new communication run: counters, recent events and faults reset. Minecraft world, inventories, agent memory, reports and accepted queued messages remain intact. It does **not** create a fresh world.
+- Event filters, pause/resume, inventory expansion, resource search, network highlighting and full-screen presentation mode are available. The view keeps up to 2,000 events per run; it displays the latest 100 matching its filter. Reloading starts with the relay's latest 200 events.
+
+The browser connects to `/observe` with its native WebSocket API. Local same-origin sessions authenticate automatically; remote sessions can enter an operator token through connection settings. The token is kept in browser memory, never bundled into JavaScript or stored in URLs/local storage. See [dashboard and recording notes](docs/dashboard.md) for details.
 
 ## Communication infrastructure
 
-The standalone Node.js WebSocket relay is ready for simulated-agent testing. It supports unique agent IDs, the six standard message types, direct/broadcast delivery, selected-agent isolation, group partitions, link failures, bounded queues, acknowledgements, expiry, and reconnection. It keeps relay connectivity separate from reported Minecraft presence. Agent decisions remain local.
+The Node.js WebSocket relay supports both the five real role bots and independent simulated agents. It supports unique agent IDs, the six standard message types, direct/broadcast delivery, selected-agent isolation, group partitions, link failures, bounded queues, acknowledgements, expiry, and reconnection. It keeps relay connectivity separate from reported Minecraft presence. Agent decisions remain local.
 
 ```sh
-npm run comms:demo       # Three independent simulated processes, partition and heal
+npm run comms:demo       # Five independent simulated processes, three partitions, then heal
 npm run comms:server     # Persistent relay on 127.0.0.1:8090
 npm run comms:agent -- Ember  # Run each simulated agent in a separate terminal
 npm run test:comms
 ```
 
-See the **[message protocol and Minecraft integration guide](docs/communication-protocol.md)** for schemas, operator controls, delivery guarantees, and future dashboard endpoints. Queues are in memory; relay-process restart recovery requires agents to re-advertise their own facts. This initial implementation has no dashboard UI and does not replace the role agents' existing Minecraft chat transport.
+See the **[message protocol and Minecraft integration guide](docs/communication-protocol.md)** for schemas, operator controls, delivery guarantees, and dashboard endpoints. The role bots use WebSockets by default. Their human-readable narration remains in Minecraft chat, but they do not learn structured peer data from chat in this mode. Queues are in memory; adapters re-advertise their own facts after reconnection. The React dashboard uses the same live relay.
+
+The extended failure simulator tracks which links can actually exchange messages, supports layered isolation/partitions and a manual `heal`, and logs failures, restoration, send attempts, and acknowledgements. State messages carry source-owned versions; both the relay and client prevent older versions from overwriting newer observations. Clients re-advertise their own latest published state after reconnects, topology changes, or a new peer joining. No server assigns agent actions.
+
+For manual testing, start the relay and simulated agents, then use a separate **operator terminal**:
+
+```sh
+npm run comms:control -- status
+npm run comms:control -- isolate Wren_Scout
+npm run comms:control -- restore Wren_Scout
+npm run comms:control -- partition Flint_Miner,Moss_Lumberjack Ember_Builder,Sage_Crafter Wren_Scout
+npm run comms:control -- heal
+```
+
+All named agents must have registered first. Start real Minecraft agents with `npm run bots`, or simulated ones with `npm run comms:agent -- NAME` in separate terminals. These controls affect peer links without closing Minecraft connections. The local server saves its operator credential in the ignored `.state/comms-operator-8090.token` file (owner access only); the CLI reads it automatically. For a remote relay, supply `COMMS_HTTP_URL` and `COMMS_OPERATOR_TOKEN` only in the operator terminal. The relay prints timestamped JSON events; the status command shows readable agent/link tables. Restart an already running relay to load code changes; a restart clears its in-memory queues and reports. The CLI persists fault settings in `.state/comms-network-PORT.json` and applies them before agents reconnect.
+
+## Updating a teammate's checkout
+
+The old bots have been replaced by the five role bots above. Before working on an existing checkout, save local changes and run:
+
+```sh
+git pull --ff-only
+npm ci
+```
+
+`npm ci` installs the versions in the lockfile. Start the dashboard and relay with `npm run dashboard`, then `npm run bots` starts the five role bots using it. Stop an old bot process before starting the replacement team; pulling files does not update an already running process. Gameplay continues if the relay is unavailable; peer communication resumes when it returns.
 
 ## Start on this Mac
 
 1. In Minecraft Launcher, choose **Java Edition → Installations → New installation → release 1.21.1**. Launch that installation. You need access to Minecraft Java Edition on your Microsoft account.
 2. Double-click **Start Server.command**. On the first run, review the linked Minecraft EULA and type `yes` only if you accept. Wait for the server's `Done` message.
 3. In Minecraft, choose **Multiplayer → Direct Connection**, enter **localhost:25565**, and join.
-4. Double-click **Start Bots.command**. Watch the five agents join and introduce themselves.
-5. Open Minecraft chat with **T** and send `!team start`.
+4. In another terminal in the project folder, run **`npm run dashboard`** and open **http://127.0.0.1:8090/**. Leave it running. If one is already running, reuse it; restart it once after updating its code.
+5. Double-click **Start Bots.command**. Watch the five agents join and introduce themselves.
+6. Open Minecraft chat with **T** and send `!team start`.
+
+To demonstrate a failure while watching Minecraft, run `npm run comms:control -- isolate Moss_Lumberjack` in another terminal. Moss continues its own role, but it cannot exchange new peer information. Run `npm run comms:control -- restore Moss_Lumberjack` to restore that link. `npm run comms:control -- status` shows which links can communicate. If a partition or pairwise fault also applies, use `heal` to clear all fault layers.
 
 To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **server terminal** (without a slash). Return with `gamemode survival YOUR_USERNAME`. To shut down, type `quit` in the bots terminal, then `stop` in the server terminal.
 
@@ -46,12 +96,14 @@ To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **s
 | `!team status` | Each agent reports role, task, inventory, deaths, and communication state. |
 | `!team pause` | Stop work and movement. |
 | `!team come` | Pause gathering and approach you, if you are nearby. |
-| `!team comms off` | Block outgoing and incoming machine-readable team discoveries. |
-| `!team comms on` | Resume communication and request/replay missed observations. |
+| `!team comms off` | Close each bot's relay adapter locally, leaving Minecraft and its role loop running. |
+| `!team comms on` | Reconnect the relay adapters and exchange current observations. |
 
 The bots terminal also accepts `start`, `pause`, `status`, `comms off`, and `comms on`. These are operator controls, not shared gameplay decisions. Human operator commands remain available during a simulated outage.
 
-Bots use readable messages such as `[TEAM 0123abcd] Wood at 12 65 -30`. Narration remains visible to spectators during the outage; agents only learn from `[TEAM ...]` messages, which are blocked before parsing. This simulates failure of the team message channel, **not** disconnection from the Minecraft world. Agents can still observe their own surroundings.
+Bots publish real health, hunger, position, task, inventory, and their own discoveries over WebSockets. Received discoveries feed the existing local role memory; reported inventories do not magically reveal shared chest contents or assign work. Administrator isolation leaves both Minecraft and relay sockets connected while preventing peer delivery. The local `!team comms off` command instead closes the relay socket, so its status correctly differs from a policy-blocked link. In both cases, agents can still observe their own surroundings and perform local work.
+
+Set `COMMS_TRANSPORT=chat` explicitly to use the old `[TEAM ...]` chat transport. There is no automatic fallback to chat when WebSocket communication fails; that would bypass a partition. Use WebSocket mode for relay failure demonstrations. Each real agent atomically saves its incremented source epoch and received version watermarks in its own state file, protecting state ordering across process restarts.
 
 ## Demo helpers
 
@@ -75,13 +127,13 @@ Set `PLAYER_NAME` if your Minecraft username is not `b_caul`. True custom skins 
 - **Enough is enough.** Each gatherer compares what the house still needs (including the door, stairs, glass and furnace the crafter must make) with what it last saw in storage plus what it carries (`src/plan.js`). Once nothing is short, the miner, lumberjack and scout stop gathering and **help the builder**: they place blocks they hold (working from the other end of the build order), drop off materials they can't place yet, and fetch only what they can place now. The crafter helps whenever it has nothing to craft. Because helpers can't see what the builder is carrying, they may slightly over-gather while the builder holds withdrawn materials.
 - **Reaching the roof.** Blocks are placed without needing line of sight (the server only checks reach), and the builder may walk inside the house to place roof blocks from below. The door is always fitted from outside, so nobody is shut in. If a roof block still can't be reached, the builder digs two dirt, pillars up beside the wall, places every roof block now within reach, and digs the pillar away again. An interrupted pillar is remembered and removed first next time.
 - **Independence.** No agent waits on another. Without a lumberjack, the miner chops its own wood for a pickaxe. Without a chest, whichever agent has the wood builds one. The builder keeps placing whatever it has and says which materials it is waiting for.
-- **Communication.** Agents publish first sightings of resources (one per 16-block region) as `[TEAM id] Stone at x y z`. When an agent can't see a resource nearby, it travels to the nearest reported location. If it finds nothing there, it marks that spot exhausted in its own memory. Reports queue during a comms outage and replay when comms return.
+- **Communication.** Agents publish first sightings of resources (one per 16-block region) as versioned WebSocket observations. Minecraft chat narrates their actions for spectators. When an agent can't see a resource nearby, it travels to the nearest reported location. If it finds nothing there, it marks that spot exhausted in its own memory. Reports queue during a comms outage and replay when comms return.
 - Death locations are remembered as danger areas, and targets near them are avoided. Failed targets are skipped for 30 seconds.
 - The miner may dig through terrain to reach stone but never inside the storage area or the house site. The other agents don't dig while pathfinding.
 
 ## Local server and dependencies
 
-Use Node.js 22+ and Java 21. On macOS with Homebrew:
+Use Node.js 22.12+ and Java 21. On macOS with Homebrew:
 
 ```sh
 brew install node@22 openjdk@21
@@ -98,22 +150,12 @@ The project uses Yarn's public npm registry mirror because the primary npm regis
 
 The setup downloads the official **1.21.1** server jar from Mojang's version manifest and verifies its SHA-1. It uses a separate world in `.server/`; existing single-player saves are untouched. `.server/`, `.state/`, and credentials are ignored by Git.
 
-The development server binds to **127.0.0.1 only**. It uses offline bot identities so all three bots can join the local experiment without separate Microsoft logins. Do not expose this configuration to the internet or remove its loopback binding. A shared/public server needs a separate authentication and networking setup.
+The development server binds to **127.0.0.1 only**. It uses offline bot identities so all five bots can join the local experiment without separate Microsoft logins. Do not expose this configuration to the internet or remove its loopback binding. A shared/public server needs a separate authentication and networking setup.
 
 Optional settings are in `.env.example`. The included server is fixed to port 25565 and version 1.21.1; changes to bot settings must match the server.
-
-## Build towards the Ender Dragon
-
-1. **Connection and communication:** join, chat, independent gathering, outage/replay, local memory.
-2. **Survival and teamwork:** food, tools, crafting, shared supplies, task claims and takeover after timeouts.
-3. **Nether:** portal construction, navigation, blaze rods, and pearls.
-4. **The End:** stronghold search, portal entry, crystal destruction, dragon combat and recovery.
-5. **Evidence:** compare progress during outages, recovery time, repeated deaths, and task duplication across saved runs.
-
-n8n can later process queued run logs and lessons. Live decisions must continue without n8n availability.
 
 ## Verification
 
 `npm test` covers the communication channel (isolation, replay, deduplication, persistence) and every role's decision rules against simulated views. It also includes a blueprint simulation showing that repeatedly placing the builder's next cell completes the whole house. That test checks build order only, not reach or pathfinding.
 
-**Not yet verified in-game:** the role system has not run against a live server. The earlier live test (7 November 2026, wood gathering and comms outage/replay) was done on the previous single-role bot. Things most likely to need tuning in a live run: pathfinding timeouts on rough terrain, reaching roof cells from outside the footprint, door/stairs facing (any facing is accepted), and chest placement on uneven ground near spawn. Agents do not eat yet, so long runs will eventually starve them. The observer connection earlier emitted one dependency `PartialReadError` while reading item-component data. Inventory-heavy work (chests, crafting, furnaces) may expose that protocol issue.
+Live checks with all five Minecraft role bots verified isolation, three-way partitions, restoration and fresh state exchange while their Minecraft connections stayed open. Browser checks exercised the dashboard controls, event filters, pause/resume, connection retry and presentation mode; responsive layouts were checked at desktop and phone widths. A previous live run reached 81/83 observed house blocks. That is not a guarantee that every seed completes: pathfinding, furnace work and terrain can still need tuning. Bots do not yet eat, so sustained survival is unfinished. A dependency occasionally emits `PartialReadError` while reading Minecraft item-component data; the observed bots continued connecting and reporting despite it.
