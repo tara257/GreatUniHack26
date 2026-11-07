@@ -71,3 +71,14 @@ export function nearest(from, positions) {
   }
   return best;
 }
+
+/** Offset (in blocks) of the n-th waypoint on a square spiral; loops after MAX_RING rings. */
+export function waypointOffset(step, spacing, maxRing) {
+  const perCycle = 4 * maxRing * (maxRing + 1); // sum of 8r for r = 1..maxRing
+  let n = ((step % perCycle) + perCycle) % perCycle;
+  let ring = 1;
+  while (n >= 8 * ring) { n -= 8 * ring; ring++; }
+  const side = Math.floor(n / (2 * ring)), along = n % (2 * ring) - ring;
+  const [x, z] = [[along, -ring], [ring, along], [-along, ring], [-ring, -along]][side];
+  return { x: x * spacing, z: z * spacing };
+}

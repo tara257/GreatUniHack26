@@ -61,7 +61,7 @@ export function craftFromCarried(v) {
  */
 export function helpBuild(v) {
   if (houseComplete(v)) return { type: 'done', say: 'The house is complete; nothing left to do' };
-  if (!v.siteLoaded || v.distanceToSite > 24) return { type: 'travel', target: v.origin.offset(4, 0, -4), range: 3, say: 'All resources gathered; heading to the house to help' };
+  if (!v.siteLoaded || v.distanceToSite > 24) return { type: 'travel', target: v.origin.offset(4, 0, -4), range: 3, say: 'Heading to the house to help the builder' };
   const cell = nextPlacement(v, { helper: true });
   if (cell) return { type: 'place', target: cell, group: cell.material, say: `Helping the builder: placing ${cell.material.replace('oak_', 'oak ')}` };
   // Hand over building materials we cannot place yet, so the builder can use them; fetch only what we can place now.
@@ -72,5 +72,5 @@ export function helpBuild(v) {
   }
   const fetch = fetchFromStorage(v, placeableNow);
   if (fetch) return { ...fetch, say: `Helping the builder: ${fetch.say.toLowerCase()}` };
-  return { type: 'wait', ms: 4000, say: 'All resources gathered; standing by to help the builder' };
+  return { type: 'wait', ms: 4000, say: 'Standing by to help the builder' };
 }

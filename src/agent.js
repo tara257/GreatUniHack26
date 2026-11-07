@@ -30,9 +30,20 @@ mkdirSync(directory, { recursive: true });
 const stateFile = resolve(directory, `${name}.json`);
 let state = { history: [], seen: [], knowledge: [], reported: [], exhausted: [], deaths: 0, running: false };
 if (existsSync(stateFile)) state = { ...state, ...JSON.parse(readFileSync(stateFile, 'utf8')) };
+// Write to a temporary file and rename it over the old one, so a crash never leaves half a file.
+// Windows refuses the rename while another program (an editor, a file watcher, antivirus) briefly
+// has the file open, so retry a few times and finally write the file directly.
 const save = () => {
-  writeFileSync(`${stateFile}.tmp`, JSON.stringify(state, null, 2));
-  renameSync(`${stateFile}.tmp`, stateFile);
+  const text = JSON.stringify(state, null, 2);
+  writeFileSync(`${stateFile}.tmp`, text);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try { renameSync(`${stateFile}.tmp`, stateFile); return; }
+    catch (error) {
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * (attempt + 1));
+    }
+  }
+  writeFileSync(stateFile, text);
 };
 
 // Runtime-only memory: recent failures and the last look inside storage.

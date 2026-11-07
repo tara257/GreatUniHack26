@@ -24,9 +24,9 @@ export function perceive(ctx) {
     v.stone = findTargets(ctx, name => name === 'stone', { maxDistance: 24 })[0] || null;
     v.knownStone = v.stone ? null : rememberedTarget(ctx, 'Stone', false);
   } else {
-    // Oak only, so the trees it reports to the team are the ones the house is made from.
-    v.tree = findTargets(ctx, name => name === 'oak_log', { maxDistance: 32 }).find(p => Math.abs(p.y - ctx.bot.entity.position.y) < 5) || null;
-    v.knownWood = v.tree ? null : rememberedTarget(ctx, 'Wood', false);
+    // Any wood will do for its own pickaxe. Kept out of `tree`, which teammates are told about as house (oak) wood.
+    v.toolTree = findTargets(ctx, isLog, { maxDistance: 32 }).find(p => Math.abs(p.y - ctx.bot.entity.position.y) < 5) || null;
+    v.knownWood = v.toolTree ? null : rememberedTarget(ctx, 'Wood', false);
   }
   return v;
 }
@@ -57,7 +57,7 @@ export function decide(v) {
     if (storageMayHave(v, 'log') || storageMayHave(v, 'planks')) {
       return { type: 'withdraw', wants: [{ group: 'log', count: 3 }, { group: 'planks', count: 9 }], say: 'Fetching wood from storage for a pickaxe' };
     }
-    if (v.tree) return { type: 'chop', target: v.tree, say: 'No pickaxe; chopping a tree for one' };
+    if (v.toolTree) return { type: 'chop', target: v.toolTree, say: 'No pickaxe; chopping a tree for one' };
     if (v.knownWood) return { type: 'travel', target: v.knownWood, say: 'Heading to reported trees for pickaxe wood' };
     return { type: 'explore', angle: v.angle, say: 'Looking for a tree to make a pickaxe' };
   }

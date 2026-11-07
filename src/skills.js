@@ -4,7 +4,7 @@ import pathfinderModule from 'mineflayer-pathfinder';
 import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, planksFor, dominantWood, woodOf } from './items.js';
 import { COMPONENTS } from './plan.js';
 import { HOUSE, insideFootprint } from './blueprint.js';
-import { Vec3, toVec, storageAnchor, storageChests, buildOrigin } from './world.js';
+import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset } from './world.js';
 
 const { goals } = pathfinderModule;
 const { Goal, GoalNear, GoalXZ, GoalBlock, GoalLookAtBlock, GoalPlaceBlock } = goals;
@@ -58,27 +58,22 @@ export async function travel(ctx, target, range = 3, ms = 25000) {
   await go(ctx, new GoalNear(p.x, p.y, p.z, range), ms);
 }
 
-// Agents explore within this distance of home (the storage spot) and turn back beyond it.
+// Agents explore within this distance of home (the storage spot).
 export const HOME_RANGE = 96;
+export const EXPLORE_SPACING = 16;
 
 /**
- * Walk a short leg in roughly the agent's preferred direction. Each blocked leg turns the next one
- * by a fixed amount, so a wall of water or a cliff is eventually walked around; beyond HOME_RANGE
- * the agent heads back towards home instead.
+ * Search the area around home by visiting the waypoints of a square spiral (16 blocks apart, out to
+ * HOME_RANGE, then starting again). Each agent's spiral is rotated by its own preferred direction so
+ * they search different ground first. A waypoint that can't be reached is skipped.
  */
-export async function explore(ctx, angle, distance = 16, ms = 15000) {
-  const p = ctx.bot.entity.position;
+export async function explore(ctx, angle, distance = EXPLORE_SPACING, ms = 20000) {
   const home = storageAnchor(ctx.bot);
-  const turns = ctx.memory.exploreTurns || 0;
-  const heading = Math.hypot(p.x - home.x, p.z - home.z) > HOME_RANGE
-    ? Math.atan2(home.z - p.z, home.x - p.x)
-    : angle + turns * 2.4; // golden-angle steps spread successive attempts around the compass
-  try {
-    await go(ctx, new GoalXZ(Math.floor(p.x + Math.cos(heading) * distance), Math.floor(p.z + Math.sin(heading) * distance)), ms);
-  } catch (error) {
-    ctx.memory.exploreTurns = turns + 1;
-    throw error;
-  }
+  const step = ctx.memory.exploreStep || 0;
+  ctx.memory.exploreStep = step + 1;
+  const { x, z } = waypointOffset(step, distance, Math.floor(HOME_RANGE / distance));
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  await go(ctx, new GoalXZ(Math.floor(home.x + x * cos - z * sin), Math.floor(home.z + x * sin + z * cos)), ms);
 }
 
 // ── Digging and collecting ──────────────────────────────────────────────────
@@ -224,6 +219,21 @@ export async function ensureTable(ctx) {
   return placeNear(ctx, 'crafting_table', near);
 }
 
+/**
+ * bot.craft resolves before the server has finished updating our inventory; crafting again straight
+ * away then sees stale slots ("missing ingredient", "updateSlot did not fire"). Wait until no slot
+ * has changed for a moment.
+ */
+export async function inventorySettled(bot, quietMs = 400, maxMs = 3000) {
+  let last = Date.now();
+  const touched = () => { last = Date.now(); };
+  bot.inventory.on('updateSlot', touched);
+  try {
+    const start = Date.now();
+    while (Date.now() - last < quietMs && Date.now() - start < maxMs) await new Promise(r => setTimeout(r, 50));
+  } finally { bot.inventory.removeListener('updateSlot', touched); }
+}
+
 /** Craft `count` result items (rounded up to whole recipe batches, limited by ingredients). */
 export async function craft(ctx, name, count = 1) {
   const { bot } = ctx;
@@ -241,8 +251,12 @@ export async function craft(ctx, name, count = 1) {
   const per = recipe.result.count;
   let times = Math.max(1, Math.ceil(count / per));
   while (times > 1 && !bot.recipesFor(id, null, times * per, table).length) times--;
-  await bot.craft(recipe, times, table);
-  check(ctx);
+  // One craft at a time: mineflayer's own repeat count runs ahead of the server's slot updates.
+  for (let i = 0; i < times; i++) {
+    await bot.craft(recipe, 1, table);
+    await inventorySettled(bot);
+    check(ctx);
+  }
   return times * per;
 }
 

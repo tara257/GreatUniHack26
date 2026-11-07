@@ -1,7 +1,7 @@
 // SCOUT: sweeps outward from spawn in a square spiral and reports useful resources over team chat.
 // Reports queue while communication is down and are sent once it returns (see channel.js).
 import pathfinderModule from 'mineflayer-pathfinder';
-import { storageAnchor } from '../world.js';
+import { storageAnchor, waypointOffset as spiral } from '../world.js';
 import { baseView, siteView, findTargets, reportOnce } from './common.js';
 import { helpBuild } from './construction.js';
 import { go } from '../skills.js';
@@ -9,6 +9,7 @@ import { go } from '../skills.js';
 const { goals: { GoalXZ } } = pathfinderModule;
 export const SPACING = 24;
 export const MAX_RING = Number(process.env.SCOUT_RINGS || 6);
+export const waypointOffset = (step, spacing = SPACING, maxRing = MAX_RING) => spiral(step, spacing, maxRing);
 
 // What the scout looks for, and whether only blocks open to the air count (reachable without digging).
 const RESOURCES = [
@@ -22,16 +23,6 @@ const RESOURCES = [
 
 export const regionOf = (kind, p) => `${kind}:${Math.floor(p.x / 16)},${Math.floor(p.z / 16)}`;
 
-/** Offset (in blocks) of the n-th waypoint on a square spiral; loops after MAX_RING rings. */
-export function waypointOffset(step, spacing = SPACING, maxRing = MAX_RING) {
-  const perCycle = 4 * maxRing * (maxRing + 1); // sum of 8r for r = 1..maxRing
-  let n = ((step % perCycle) + perCycle) % perCycle;
-  let ring = 1;
-  while (n >= 8 * ring) { n -= 8 * ring; ring++; }
-  const side = Math.floor(n / (2 * ring)), along = n % (2 * ring) - ring;
-  const [x, z] = [[along, -ring], [ring, along], [-along, ring], [-ring, -along]][side];
-  return { x: x * spacing, z: z * spacing };
-}
 
 // How often the scout returns to check whether the team has gathered everything.
 export const STORAGE_CHECK_MS = 180_000;

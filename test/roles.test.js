@@ -11,12 +11,12 @@ const P = (x, y, z) => new Vec3(x, y, z);
 const base = over => ({ inv: {}, lowHealth: false, full: false, storageExists: true, storage: null, angle: 0, ...over });
 
 test('miner without a pickaxe bootstraps one from wood', () => {
-  assert.equal(miner.decide(base({ storageExists: false, tree: P(1, 64, 1) })).type, 'chop');
+  assert.equal(miner.decide(base({ storageExists: false, toolTree: P(1, 64, 1) })).type, 'chop');
   assert.equal(miner.decide(base({ storageExists: false, tree: null, knownWood: [5, 64, 5] })).type, 'travel');
   assert.equal(miner.decide(base({ storageExists: false })).type, 'explore');
   assert.equal(miner.decide(base({ storage: { contents: { oak_log: 4 }, age: 0 } })).type, 'withdraw');
   // Storage recently seen empty: go chop instead of repeatedly checking it.
-  assert.equal(miner.decide(base({ storage: { contents: {}, age: 0 }, tree: P(1, 64, 1) })).type, 'chop');
+  assert.equal(miner.decide(base({ storage: { contents: {}, age: 0 }, toolTree: P(1, 64, 1) })).type, 'chop');
   const craft = miner.decide(base({ inv: { oak_log: 3 } }));
   assert.deepEqual([craft.type, craft.item], ['craft_tool', 'wooden_pickaxe']);
 });
