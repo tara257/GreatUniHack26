@@ -9,17 +9,17 @@ Independent Minecraft agents working towards defeating the Ender Dragon, even wh
 | Flint_Miner | Miner | Crafts its own pickaxe (chopping a tree if needed), upgrades to stone, mines stone, returns cobblestone to storage. |
 | Moss_Lumberjack | Lumberjack | Fells nearby trees, delivers logs; once storage holds enough logs, delivers planks instead. Builds the storage chest if none exists. |
 | Ember_Builder | Builder | Compares the house blueprint with the world, clears obstructions, places whatever it holds materials for, fetches the rest from storage, and switches to another part of the house when a material is missing. |
-| Sage_Crafter | Crafter *(opt-in)* | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
-| Wren_Scout | Scout *(opt-in)* | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over team chat. |
+| Sage_Crafter | Crafter | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
+| Wren_Scout | Scout | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over team chat. |
 
-Miner, Lumberjack and Builder start by default. Crafter and Scout are implemented and tested offline but have **not been verified on a live server yet**. Enable them with `TEAM_ROLES=all` once the core three are working (see `.env.example`). Nether progression, stronghold navigation and dragon combat are **not implemented yet**.
+All five agents start by default; set `TEAM_ROLES` (see `.env.example`) to run a subset, e.g. `TEAM_ROLES=miner,lumberjack,builder`. Nether progression, stronghold navigation and dragon combat are **not implemented yet**.
 
 ## Start on this Mac
 
 1. In Minecraft Launcher, choose **Java Edition → Installations → New installation → release 1.21.1**. Launch that installation. You need access to Minecraft Java Edition on your Microsoft account.
 2. Double-click **Start Server.command**. On the first run, review the linked Minecraft EULA and type `yes` only if you accept. Wait for the server's `Done` message.
 3. In Minecraft, choose **Multiplayer → Direct Connection**, enter **localhost:25565**, and join.
-4. Double-click **Start Bots.command**. Watch Flint_Miner, Moss_Lumberjack and Ember_Builder join and introduce themselves.
+4. Double-click **Start Bots.command**. Watch the five agents join and introduce themselves.
 5. Open Minecraft chat with **T** and send `!team start`.
 
 To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **server terminal** (without a slash). Return with `gamemode survival YOUR_USERNAME`. To shut down, type `quit` in the bots terminal, then `stop` in the server terminal.

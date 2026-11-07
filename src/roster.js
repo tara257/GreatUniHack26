@@ -8,8 +8,8 @@ export const ROSTER = [
 ];
 export const TEAM_NAMES = ROSTER.map(member => member.name);
 export const ROLES = ROSTER.map(member => member.role);
-// Crafter and scout are opt-in until the core three are confirmed in a live run.
-export const DEFAULT_ROLES = ['miner', 'lumberjack', 'builder'];
+// Everyone joins by default; TEAM_ROLES can pick a subset.
+export const DEFAULT_ROLES = ROLES;
 
 export function selectRoster(spec = process.env.TEAM_ROLES) {
   const wanted = !spec ? DEFAULT_ROLES : spec.trim() === 'all' ? ROLES : spec.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
