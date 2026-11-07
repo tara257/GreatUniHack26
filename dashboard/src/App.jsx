@@ -52,14 +52,19 @@ function NetworkGraph({agents,links,events,selected,onSelect,now,verified}) {
 }
 function HouseModel({house}) {
   const cells=[...(house?.cells || [])].sort((a,b)=>a.y-b.y || a.x+a.z-b.x-b.z);
+  // Scale the isometric blocks so any blueprint size fits (a 5x5 house is drawn at full size).
+  const bound=(f,pick)=>cells.length?f(...cells.map(pick)):0;
+  const minX=bound(Math.min,c=>c.x),maxX=bound(Math.max,c=>c.x),minZ=bound(Math.min,c=>c.z),maxZ=bound(Math.max,c=>c.z),maxY=bound(Math.max,c=>c.y);
+  const k=Math.min(1,10/((maxX-minX+1)+(maxZ-minZ+1)),150/(23*(maxY+1)+18*((maxX-minX+1)+(maxZ-minZ+1))/2));
+  const W=18*k,H=9*k,D=23*k,mid=((maxX-minZ)+(minX-maxZ))/2;
   return <svg viewBox="0 0 240 200" className="house-model" role="img" aria-label={house?'Blueprint blocks: solid blocks are observed in place; outlines are missing or unobserved.':'Awaiting builder survey'}>
     <defs><pattern id="house-grid" width="20" height="10" patternUnits="userSpaceOnUse" patternTransform="matrix(1 .5 -1 .5 120 95)"><path d="M 20 0 H 0 V 10" fill="none" stroke="#343a37" strokeWidth=".6"/></pattern></defs>
     <path d="M 120 75 235 132 120 190 5 132 Z" fill="url(#house-grid)"/>
     {cells.map(c=>{
-      const x=120+(c.x-c.z)*18,y=91+(c.x+c.z)*9-c.y*23,complete=c.status==='complete';
-      const top=x+','+y+' '+(x+18)+','+(y+9)+' '+x+','+(y+18)+' '+(x-18)+','+(y+9);
-      const left=(x-18)+','+(y+9)+' '+x+','+(y+18)+' '+x+','+(y+40)+' '+(x-18)+','+(y+31);
-      const right=x+','+(y+18)+' '+(x+18)+','+(y+9)+' '+(x+18)+','+(y+31)+' '+x+','+(y+40);
+      const x=120+(c.x-c.z-mid)*W,y=40+maxY*D+(c.x-minX+c.z-minZ)*H-c.y*D,complete=c.status==='complete';
+      const top=x+','+y+' '+(x+W)+','+(y+H)+' '+x+','+(y+2*H)+' '+(x-W)+','+(y+H);
+      const left=(x-W)+','+(y+H)+' '+x+','+(y+2*H)+' '+x+','+(y+2*H+D)+' '+(x-W)+','+(y+H+D);
+      const right=x+','+(y+2*H)+' '+(x+W)+','+(y+H)+' '+(x+W)+','+(y+H+D)+' '+x+','+(y+2*H+D);
       return <g key={[c.x,c.y,c.z].join(',')} stroke={complete?'#c7a46a':'#515952'} strokeWidth=".65" opacity={complete?1:.24}><polygon points={left} fill={complete?'#665b43':'#171d1b'}/><polygon points={right} fill={complete?'#89764f':'#171d1b'}/><polygon points={top} fill={complete?'#d7b97a':'#202821'}/></g>;
     })}
     {!house && <text x="120" y="110" textAnchor="middle" fill="#788078" fontSize="12">No site observation yet</text>}

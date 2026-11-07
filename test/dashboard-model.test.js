@@ -23,9 +23,9 @@ test('house progress is measured from loaded world blocks and identifies incompl
   const bot={spawnPoint:new Vec3(0,64,0),entity:{},blockAt:()=>({name:'air'})};
   const origin=buildOrigin(bot),cell=HOUSE.cells.find(c=>c.material==='cobblestone');
   bot.blockAt=p=>p.x===origin.x+cell.x && p.y===origin.y+cell.y && p.z===origin.z+cell.z?{name:'cobblestone'}:{name:'air'};
-  const result=observeHouse(bot);
-  assert.equal(result.placed,1);assert.equal(result.required,83);assert.equal(result.unknown,0);
+  const result=observeHouse(bot),required=HOUSE.cells.filter(c=>c.material!=='air').length;
+  assert.equal(result.placed,1);assert.equal(result.required,required);assert.equal(result.unknown,0);
   assert.equal(result.phases[0].placed,1);assert.equal(result.cells.filter(c=>c.status==='complete').length,1);
-  bot.blockAt=()=>null;const unloaded=observeHouse(bot);assert.equal(unloaded.placed,0);assert.equal(unloaded.unknown,83);
+  bot.blockAt=()=>null;const unloaded=observeHouse(bot);assert.equal(unloaded.placed,0);assert.equal(unloaded.unknown,required);
   assert.equal(observeHouse(null),null);
 });
