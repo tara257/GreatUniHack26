@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import * as miner from '../src/roles/miner.js';
 import * as lumberjack from '../src/roles/lumberjack.js';
 import * as builder from '../src/roles/builder.js';
-import { HOUSE, survey, placeable, requirements, cellKey } from '../src/blueprint.js';
+import { NORDIC as HOUSE, survey, placeable as placeableFor, requirements, cellKey } from '../src/blueprint.js';
+const placeable = (report, origin, nameAt) => placeableFor(report, origin, nameAt, HOUSE);
 import { helpBuild, craftFromCarried } from '../src/roles/construction.js';
 import { Vec3 } from '../src/world.js';
 
@@ -172,10 +173,10 @@ test('helpers hand over materials they cannot place yet and fetch only what they
 
 test('a builder holding materials it cannot place yet returns them, so the crafter sees the real stock', () => {
   // Floor not started: logs, fences and the door can't be placed; cobblestone is all it can use.
-  const view = builderView(flat, { inv: { oak_log: 18, oak_fence: 13, oak_door: 1 }, storage: { contents: {}, age: 0 } });
+  const view = builderView(flat, { inv: { oak_log: 18, oak_planks: 4, oak_door: 1 }, storage: { contents: {}, age: 0 } });
   const giveBack = builder.decide(view);
   assert.equal(giveBack.type, 'deposit');
-  assert.deepEqual(['oak_log', 'oak_fence', 'oak_door', 'cobblestone'].map(giveBack.keep), [0, 0, 0, 999]);
+  assert.deepEqual(['oak_log', 'oak_planks', 'oak_door', 'cobblestone'].map(giveBack.keep), [0, 0, 0, 999]);
 });
 
 test('lumberjack pillars up for tall oaks, digging dirt first, and ranges further for oak', () => {

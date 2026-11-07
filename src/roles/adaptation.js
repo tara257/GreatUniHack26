@@ -1,7 +1,7 @@
 import * as miner from './miner.js';
 import * as lumberjack from './lumberjack.js';
 import * as crafter from './crafter.js';
-import { rawShortfall } from '../plan.js';
+import { rawShortfall, COMPONENTS } from '../plan.js';
 import { STORAGE_STALE_MS } from './common.js';
 
 export const FALLBACK_DELAY = {scout:15000,builder:30000,crafter:45000,lumberjack:60000,miner:75000};
@@ -13,7 +13,7 @@ export const fallbackActions = crafter.actions;
 export function fallbackNeed(memory, role, view, primary, now = Date.now()) {
   if (!view.siteNeed || !view.siteLoaded || view.lowHealth) return null;
   const needs = view.shortfall || rawShortfall(view.siteNeed,view.inv,{furnaceNear:view.furnaceNear});
-  const values = {wood:needs.wood,stone:needs.cobblestone,components:(view.siteNeed.oak_door || 0)+(view.siteNeed.oak_fence || 0)+(view.siteNeed.oak_stairs || 0)};
+  const values = {wood:needs.wood,stone:needs.cobblestone,components:COMPONENTS.reduce((sum,c)=>sum+(view.siteNeed[c.item] || 0),0)};
   memory.shortages ??= {};
   for (const [kind,value] of Object.entries(values)) {
     const old=memory.shortages[kind];

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rawShortfall, componentShortfall, componentPlanks } from '../src/plan.js';
-import { blueprintNeeds } from '../src/blueprint.js';
+import { NORDIC, STARTER, blueprintNeeds as needsFor } from '../src/blueprint.js';
+const blueprintNeeds = () => needsFor(NORDIC);
 
 test('a fresh site needs cobblestone for the floor and base, and oak for posts, walls, roof and components', () => {
   const s = rawShortfall(blueprintNeeds(), {});
@@ -21,5 +22,14 @@ test('components already made remove their raw cost; placed blocks are no longer
   const need = { oak_planks: 10, oak_door: 1, oak_stairs: 8, oak_fence: 3 };
   assert.equal(rawShortfall(need, { oak_door: 1, oak_stairs: 8, oak_fence: 3, oak_planks: 10 }).wood, 0);
   assert.deepEqual(componentShortfall(need, { oak_stairs: 5 }), { oak_door: 1, oak_fence: 3, oak_stairs: 3 });
-  assert.deepEqual(rawShortfall({}, {}), { cobblestone: 0, wood: 0 });
+  assert.deepEqual(rawShortfall({}, {}), { cobblestone: 0, wood: 0, sand: 0 });
+});
+
+test('glass windows add sand, a furnace and fuel to what must be collected', () => {
+  const s = rawShortfall(needsFor(STARTER), {});
+  assert.deepEqual(s, { cobblestone: 25 + 8, wood: 8 + Math.ceil((45 + 6 + 6 + 4) / 4), sand: 6 });
+  // A furnace already built, or glass/panes already made, remove those costs.
+  assert.equal(rawShortfall(needsFor(STARTER), {}, { furnaceNear: true }).cobblestone, 25);
+  assert.equal(rawShortfall(needsFor(STARTER), { glass: 6 }).sand, 0);
+  assert.equal(rawShortfall(needsFor(STARTER), { glass_pane: 2 }).sand, 0);
 });

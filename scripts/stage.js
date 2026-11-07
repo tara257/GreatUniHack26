@@ -15,12 +15,18 @@ import { ROSTER } from '../src/roster.js';
 import { isSoft } from '../src/items.js';
 import { HOUSE } from '../src/blueprint.js';
 import { BUILD_OFFSET } from '../src/world.js';
+import { WOODS, DESIGN } from '../src/design.js';
+import { existsSync, writeFileSync } from 'node:fs';
 
 const { Vec3 } = vec3Module;
 const PLAYER = process.env.PLAYER_NAME || 'b_caul';
 const SEARCH_RADIUS = 56;
-// Oak canopy samples (every 2 blocks within 32) needed near the site; about one oak tree is 4-8.
-const MIN_OAK = Number(process.env.MIN_OAK || 6);
+// Canopy samples (every 2 blocks within 32) of ONE wood species needed near the site; one tree is 4-8.
+const MIN_TREES = Number(process.env.MIN_TREES || 12);
+// Sand samples (every 2 blocks within 40) needed near the site, for the glass windows.
+const MIN_SAND = Number(process.env.MIN_SAND || 4);
+// The wood is the most common species near the site unless HOUSE_WOOD is already set.
+const FIXED_WOOD = process.env.HOUSE_WOOD ? process.env.HOUSE_WOOD.trim().toLowerCase() : null;
 // Ground that must be level and open: the house footprint with a one-block margin (plus the front
 // step) and a small patch at spawn for the storage chest and crafting table.
 const F = HOUSE.footprint;
@@ -94,17 +100,20 @@ function surveyorFindsSite({ centre = null, biome = null } = {}) {
   });
 }
 
+// Which house wood a leaf or log block belongs to (null for azalea leaves and the like).
+const speciesOf = name => WOODS.find(w => name === `${w}_leaves` || name === `${w}_log`) || null;
+
 /** Height and kind of the top solid block in each column, ignoring plants. */
 function surfaceOf(bot, x, z, top, depth = 80) {
   for (let y = top; y > top - depth; y--) {
     const block = bot.blockAt(new Vec3(x, y, z));
     if (!block) return null;
     if (block.name === 'air' || block.name === 'cave_air') continue;
-    if (/leaves/.test(block.name)) return { y, kind: 'tree', oak: block.name === 'oak_leaves' };
+    if (/leaves$/.test(block.name)) return { y, kind: 'tree', species: speciesOf(block.name) };
     if (/water|lava|ice/.test(block.name)) return { y, kind: 'liquid' };
     if (isSoft(block.name)) continue;
-    if (/_log$/.test(block.name)) return { y, kind: 'tree', oak: block.name === 'oak_log' };
-    return { y, kind: 'ground' };
+    if (/_log$/.test(block.name)) return { y, kind: 'tree', species: speciesOf(block.name) };
+    return { y, kind: 'ground', sand: block.name === 'sand' };
   }
   return null;
 }
@@ -139,18 +148,24 @@ function findFlatSite(bot, { biome = null, deep = false } = {}) {
     const here = b?.name || bot.registry.biomes?.[b?.id]?.name;
     biomes.add(here);
     if (biome && here !== biome) { why.otherBiome++; continue; }
-    // Oak trees within reach keep the lumberjack busy (the house is all oak); water slows everyone down.
-    let trees = 0, water = 0, sampled = 0;
-    for (let x = -32; x <= 32; x += 2) for (let z = -32; z <= 32; z += 2) {
+    // One wood species within reach keeps the lumberjack busy (the house is a single wood), sand
+    // nearby gives the glass windows, and water close to the house slows everyone down.
+    const species = {};
+    let water = 0, sand = 0, near = 0;
+    for (let x = -40; x <= 40; x += 2) for (let z = -40; z <= 40; z += 2) {
       const s = at(ax + x, az + z);
-      sampled++;
-      if (s?.kind === 'tree' && s.oak) trees++;
-      if (s?.kind === 'liquid') water++;
+      if (s?.sand) sand++;
+      if (Math.abs(x) > 32 || Math.abs(z) > 32) continue;
+      if (s?.kind === 'tree' && s.species) species[s.species] = (species[s.species] || 0) + 1;
+      if (Math.abs(x) <= 24 && Math.abs(z) <= 24) { near++; if (s?.kind === 'liquid') water++; }
     }
-    if (trees < MIN_OAK) { why.fewTrees++; why.mostOak = Math.max(why.mostOak || 0, trees); continue; }
-    if (water > sampled * 0.08) { why.water = (why.water || 0) + 1; continue; }
-    const score = (max - min) * 10 + Math.hypot(dx, dz) / 10 - Math.min(trees, 60) / 8 + water;
-    if (!best || score < best.score) best = { x: ax, y: max + 1, z: az, score, flatness: max - min, trees, water };
+    const [wood, trees] = FIXED_WOOD ? [FIXED_WOOD, species[FIXED_WOOD] || 0]
+      : Object.entries(species).sort((a, b) => b[1] - a[1])[0] || [null, 0];
+    if (trees < MIN_TREES) { why.fewTrees++; why.mostTrees = Math.max(why.mostTrees || 0, trees); continue; }
+    if (sand < MIN_SAND) { why.noSand = (why.noSand || 0) + 1; continue; }
+    if (water > near * 0.08) { why.water = (why.water || 0) + 1; continue; }
+    const score = (max - min) * 10 + Math.hypot(dx, dz) / 10 - Math.min(trees, 60) / 8 - Math.min(sand, 20) / 4 + water;
+    if (!best || score < best.score) best = { x: ax, y: max + 1, z: az, score, flatness: max - min, wood, trees, sand, water };
   }
   if (!best) throw new Error(`No flat open area with nearby trees found around ${centre.x}, ${centre.z}. Rejected spots: ${JSON.stringify(why)}; biomes on flat ground: ${[...biomes].join(', ') || 'none'}`);
   return best;
@@ -174,7 +189,11 @@ if (args[0] === 'biome' || args[0] === 'near') {
 } else {
   site = await surveyorFindsSite();
 }
-console.log(`New spawn: ${site.x} ${site.y} ${site.z}${site.biome ? ` in ${site.biome}` : ''}${site.trees ? ` (height variation ${site.flatness}, ${site.trees} oak columns and ${site.water} water columns nearby)` : ''}`);
+console.log(`New spawn: ${site.x} ${site.y} ${site.z}${site.biome ? ` in ${site.biome}` : ''}${site.trees ? ` (height variation ${site.flatness}; nearby: ${site.trees} ${site.wood} tree, ${site.sand} sand and ${site.water} water samples)` : ''}`);
+if (site.wood) {
+  setEnv('HOUSE_WOOD', site.wood);
+  console.log(`House wood: ${site.wood} (saved as HOUSE_WOOD in .env; restart the bots to use it). Design: ${DESIGN}.`);
+}
 
 const { x, y, z } = site;
 sendCommands([
@@ -190,3 +209,11 @@ sendCommands([
   `say Demo staged: new spawn at ${x} ${y} ${z}. Storage goes here; the house goes just east of it.`,
 ]);
 console.log('Sent spawn, rules, teleports and outfits to the server. Bots that are offline will need `npm run stage -- ' + `${x} ${y} ${z}` + '` again once they join.');
+
+/** Set one KEY=value line in the project's .env (created if missing), keeping every other line. */
+function setEnv(key, value) {
+  const file = fileURLToPath(new URL('../.env', import.meta.url));
+  const lines = existsSync(file) ? readFileSync(file, 'utf8').split(/\r?\n/).filter(l => l !== '') : [];
+  const rest = lines.filter(l => !l.startsWith(`${key}=`));
+  writeFileSync(file, [...rest, `${key}=${value}`].join('\n') + '\n');
+}

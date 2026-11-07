@@ -3,6 +3,7 @@
 import pathfinderModule from 'mineflayer-pathfinder';
 import { GROUPS, isEmpty, isSoft, isInteractive, isLog, countItems, total, planksFor, dominantWood, woodOf } from './items.js';
 import { COMPONENTS } from './plan.js';
+import { WOOD, wood } from './design.js';
 import { HOUSE, insideFootprint } from './blueprint.js';
 import { Vec3, toVec, storageAnchor, storageChests, buildOrigin, waypointOffset, isProtected } from './world.js';
 
@@ -322,14 +323,17 @@ export async function craftTool(ctx, name) {
   await craft(ctx, name, 1);
 }
 
-/** Craft an oak house component (oak_door, oak_fence, oak_stairs), preparing planks and sticks. */
+/** Craft a house component (door, fence, stairs in the house wood, or glass panes), preparing its inputs. */
 export async function craftComponent(ctx, item, count) {
   const component = COMPONENTS.find(c => c.item === item);
   if (!component) throw new Error(`Unknown component ${item}`);
   const batches = Math.max(1, Math.ceil(count / component.makes));
   await ensureTable(ctx);
-  if (item === 'oak_fence') await ensureSticks(ctx, 2 * batches);
-  await ensurePlanks(ctx, (item === 'oak_fence' ? 4 : 6) * batches, 'oak');
+  if (!component.glass) {
+    const fence = item === wood('fence');
+    if (fence) await ensureSticks(ctx, 2 * batches);
+    await ensurePlanks(ctx, (fence ? 4 : 6) * batches, WOOD);
+  }
   return craft(ctx, item, batches * component.makes);
 }
 
@@ -677,11 +681,19 @@ export const actions = {
   craft_tool: (ctx, a) => craftTool(ctx, a.item),
   craft_planks: (ctx, a) => convertLogs(ctx, a.count, a.wood),
   // Craft a house component; fetch inputs from storage first and return the results if asked.
+  // Smelt sand into glass for windows; fetch sand/fuel/cobblestone first and return the glass.
+  smelt_glass: async (ctx, a) => {
+    const held = counts(ctx.bot);
+    const wants = (a.inputs || []).filter(i => total(held, i.group) < i.count).map(i => ({ group: i.group, count: i.count - total(held, i.group) }));
+    if (wants.length) await withdraw(ctx, wants);
+    await smelt(ctx, 'sand', a.count);
+    await deposit(ctx, () => 0);
+  },
   make: async (ctx, a) => {
     const held = counts(ctx.bot);
     const wants = (a.inputs || []).filter(i => total(held, i.group) < i.count).map(i => ({ group: i.group, count: i.count - total(held, i.group) }));
     if (wants.length) await withdraw(ctx, wants);
-    if (a.item === 'oak_planks') await convertLogs(ctx, a.count, 'oak');
+    if (a.item === wood('planks')) await convertLogs(ctx, a.count, WOOD);
     else await craftComponent(ctx, a.item, a.count);
     if (a.returnToStorage) await deposit(ctx, a.keep || (() => 0));
   },

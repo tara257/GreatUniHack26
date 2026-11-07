@@ -1,6 +1,7 @@
 // Pure arithmetic shared by roles: crafted house components and how much raw material the team
 // still has to collect. Each agent runs this on its OWN observations (site survey, last look in
-// storage, own inventory). The house is all oak, so only oak counts as wood.
+// storage, own inventory). The house uses one wood type (HOUSE_WOOD), so only that wood counts.
+import { wood } from './design.js';
 
 export function merge(...maps) {
   const out = {};
@@ -9,15 +10,18 @@ export function merge(...maps) {
 }
 
 /**
- * Crafted components in priority order: the door closes the house, fences make the windows,
- * stairs form the roof. `planks` is the oak planks one batch costs (sticks for fences included:
- * 2 sticks come from 1 plank), `makes` how many items a batch yields.
+ * Crafted components in priority order: the door closes the house, windows next, then stairs.
+ * `planks` is the house-wood planks one batch costs (fence sticks included: 2 sticks = 1 plank),
+ * `glass` the glass blocks it costs, `makes` how many items a batch yields.
  */
 export const COMPONENTS = [
-  { item: 'oak_door', planks: 6, makes: 3 },
-  { item: 'oak_fence', planks: 5, makes: 3 },
-  { item: 'oak_stairs', planks: 6, makes: 4 },
+  { item: wood('door'), planks: 6, makes: 3 },
+  { item: wood('fence'), planks: 5, makes: 3 },
+  { item: 'glass_pane', glass: 6, makes: 16 },
+  { item: wood('stairs'), planks: 6, makes: 4 },
 ];
+// Smelting 6 sand into glass for one batch of panes: a furnace (8 cobblestone) and fuel (4 planks).
+export const GLASS_BATCH = 6, FURNACE_COBBLE = 8, FUEL_PLANKS = 4;
 
 const n = (map, name) => map[name] || 0;
 
@@ -31,25 +35,30 @@ export function componentShortfall(siteNeed, stock) {
   return short;
 }
 
-/** Oak planks needed to craft the given component shortfall. */
+/** House-wood planks needed to craft the given component shortfall. */
 export function componentPlanks(short) {
-  return COMPONENTS.reduce((sum, c) => sum + (short[c.item] ? Math.ceil(short[c.item] / c.makes) * c.planks : 0), 0);
+  return COMPONENTS.reduce((sum, c) => sum + (short[c.item] && c.planks ? Math.ceil(short[c.item] / c.makes) * c.planks : 0), 0);
 }
+
+/** Whether glass still has to be smelted for missing panes (not enough glass made yet). */
+export const needsGlass = (siteNeed, stock) => !!componentShortfall(siteNeed, stock).glass_pane && n(stock, 'glass') < GLASS_BATCH;
 
 /**
  * Raw materials still to collect.
- * siteNeed: blueprint blocks not yet placed, e.g. { cobblestone: 128, oak_planks: 89, oak_stairs: 89, ... }.
+ * siteNeed: blueprint blocks not yet placed, e.g. { cobblestone: 25, oak_planks: 45, glass_pane: 2, ... }.
  * stock:    items known to be available (storage contents + own inventory).
- * Returns { cobblestone, wood } where wood is counted in oak logs (1 log = 4 planks).
+ * Returns { cobblestone, wood, sand }; wood is counted in house-wood logs (1 log = 4 planks).
  */
-export function rawShortfall(siteNeed, stock) {
-  const logsNeeded = n(siteNeed, 'oak_log');
-  const planksNeeded = n(siteNeed, 'oak_planks') + componentPlanks(componentShortfall(siteNeed, stock));
-  const logs = n(stock, 'oak_log');
+export function rawShortfall(siteNeed, stock, { furnaceNear = false } = {}) {
+  const glass = needsGlass(siteNeed, stock);
+  const logsNeeded = n(siteNeed, wood('log'));
+  const planksNeeded = n(siteNeed, wood('planks')) + componentPlanks(componentShortfall(siteNeed, stock)) + (glass ? FUEL_PLANKS : 0);
+  const logs = n(stock, wood('log'));
   const spareLogs = Math.max(0, logs - logsNeeded);
-  const plankGap = Math.max(0, planksNeeded - n(stock, 'oak_planks') - 4 * spareLogs);
+  const plankGap = Math.max(0, planksNeeded - n(stock, wood('planks')) - 4 * spareLogs);
   return {
-    cobblestone: Math.max(0, n(siteNeed, 'cobblestone') - n(stock, 'cobblestone')),
+    cobblestone: Math.max(0, n(siteNeed, 'cobblestone') + (glass && !furnaceNear ? FURNACE_COBBLE : 0) - n(stock, 'cobblestone')),
     wood: Math.max(0, logsNeeded - logs) + Math.ceil(plankGap / 4),
+    sand: glass ? Math.max(0, GLASS_BATCH - n(stock, 'sand')) : 0,
   };
 }

@@ -1,54 +1,66 @@
-// Predefined house blueprint and pure survey/planning functions.
+// Predefined house blueprints and pure survey/planning functions.
 // Coordinates are relative to the build origin: x east, y up, z south. The door faces north (-z).
 //
-// The house is a small Nordic-style cottage, a simplified design inspired by "Nordic Small Home"
-// by Harek319 on GrabCraft (https://www.grabcraft.com/minecraft/nordic-small-home/medieval-houses).
-// It is redrawn here at about a third of the size, all in oak and cobblestone, so the bots can
-// gather and build it in a demo.
+// Two designs, chosen with HOUSE_DESIGN (see design.js); both use ONE wood type (HOUSE_WOOD):
+// - starter: the original 5x5 house: cobblestone floor, log corners, plank walls and flat roof,
+//   a door, two glass-pane windows and a front step (default).
+// - nordic: a 9x11 cottage with a stair gable roof, a simplified design inspired by "Nordic Small
+//   Home" by Harek319 on GrabCraft (https://www.grabcraft.com/minecraft/nordic-small-home/medieval-houses).
 import { AIR, isEmpty, isSoft, isInteractive, total } from './items.js';
+import { wood, DESIGN } from './design.js';
 
 // Blueprint materials are exact block/item names, except these special ones.
 const SPECIAL = {
-  door_upper: name => name === 'oak_door', // appears automatically when the lower door half is placed
-  filler: name => !isSoft(name),            // anything solid under a floor that would otherwise float
+  door_upper: name => name === wood('door'), // appears automatically when the lower door half is placed
+  filler: name => !isSoft(name),              // anything solid under a floor that would otherwise float
   air: name => AIR.has(name),
 };
 const satisfies = (material, name) => (SPECIAL[material] ? SPECIAL[material](name) : name === material);
 // Materials that are never placed directly.
 const PASSIVE = new Set(['air', 'door_upper']);
 
-// Each symbol: block name and, for stairs, the direction it must face.
+// Each symbol: block name and, for stairs, the direction it must face. Wood blocks use the house wood.
 const LEGEND = {
   C: { material: 'cobblestone' },
-  L: { material: 'oak_log' },
-  P: { material: 'oak_planks' },
-  F: { material: 'oak_fence' },        // fence-post windows
-  D: { material: 'oak_door' },
+  L: { material: wood('log') },
+  P: { material: wood('planks') },
+  F: { material: wood('fence') },        // fence-post windows
+  G: { material: 'glass_pane' },          // glass windows
+  D: { material: wood('door') },
   U: { material: 'door_upper' },
-  '>': { material: 'oak_stairs', facing: 'east' },  // west roof slope, rising towards the ridge
-  '<': { material: 'oak_stairs', facing: 'west' },  // east roof slope
-  v: { material: 'oak_stairs', facing: 'south' },   // front step, climbing into the house
-  '.': { material: 'air' },             // must be kept clear inside the house
-  ' ': null,                             // not part of the blueprint
+  '>': { material: wood('stairs'), facing: 'east' },  // west roof slope, rising towards the ridge
+  '<': { material: wood('stairs'), facing: 'west' },  // east roof slope
+  v: { material: wood('stairs'), facing: 'south' },   // front step, climbing into the house
+  '.': { material: 'air' },               // must be kept clear inside the house
+  ' ': null,                               // not part of the blueprint
 };
 
-// Drawn layer by layer from the floor up (y = 0..8). In each layer, rows run north to south
-// (z = -1..10) and characters west to east (x = 0..8). Row z = -1 is outside, for the front step.
-const WALL_ROWS = (posts, side, front, back) => ['         ', front, ...side.slice(0, 4), posts, ...side.slice(4), back];
-const SIDES = fill => [`${fill[0]}.......${fill[0]}`, `${fill[1]}.......${fill[1]}`, `${fill[2]}.......${fill[2]}`, `${fill[3]}.......${fill[3]}`,
-  `${fill[4]}.......${fill[4]}`, `${fill[5]}.......${fill[5]}`, `${fill[6]}.......${fill[6]}`, `${fill[7]}.......${fill[7]}`];
-const roofLayer = (gable, slope) => ['         ', gable, ...Array(9).fill(slope), gable];
+// ── Starter house (5x5): layers y = 0..3, rows z = -1..4, characters x = 0..4 ─────────────────
+const STARTER_LAYERS = [
+  // y = 0: floor and front step
+  ['  v  ', 'CCCCC', 'CCCCC', 'CCCCC', 'CCCCC', 'CCCCC'],
+  // y = 1: walls, log corner posts, lower half of the door (north side)
+  ['     ', 'LPDPL', 'P...P', 'P...P', 'P...P', 'LPPPL'],
+  // y = 2: walls, upper door half, glass-pane windows east and west
+  ['     ', 'LPUPL', 'P...P', 'G...G', 'P...P', 'LPPPL'],
+  // y = 3: flat plank roof
+  ['     ', 'PPPPP', 'PPPPP', 'PPPPP', 'PPPPP', 'PPPPP'],
+];
 
-const LAYERS = [
+// ── Nordic cottage (9x11): layers y = 0..8, rows z = -1..10, characters x = 0..8 ──────────────
+const WALL_ROWS = (posts, side, front, back) => ['         ', front, ...side.slice(0, 4), posts, ...side.slice(4), back];
+const SIDES = fill => [...fill].map(ch => `${ch}.......${ch}`);
+const roofLayer = (gable, slope) => ['         ', gable, ...Array(9).fill(slope), gable];
+const NORDIC_LAYERS = [
   // y = 0: cobblestone floor and the front step
   ['    v    ', ...Array(11).fill('CCCCCCCCC')],
-  // y = 1: cobblestone base course between oak log posts; door in the middle of the north wall
+  // y = 1: cobblestone base course between log posts; door in the middle of the north wall
   WALL_ROWS('L.......L', SIDES('CCCCCCCC'), 'LCCCDCCCL', 'LCCCCCCCL'),
   // y = 2: plank walls with fence windows (two per side, one either side of the door, three at the back)
   WALL_ROWS('L.......L', SIDES('PFFPPFFP'), 'LPFPUPFPL', 'LPPFFFPPL'),
   // y = 3: top course of the walls
   WALL_ROWS('L.......L', SIDES('PPPPPPPP'), 'LPPPPPPPL', 'LPPPPPPPL'),
-  // y = 4..7: gable roof of oak stairs; plank gable ends close the front and back
+  // y = 4..7: gable roof of stairs; plank gable ends close the front and back
   roofLayer('>PPPPPPP<', '>       <'),
   roofLayer(' >PPPPP< ', ' >     < '),
   roofLayer('  >PPP<  ', '  >   <  '),
@@ -66,11 +78,18 @@ export function parseLayers(layers, legend = LEGEND) {
   return cells;
 }
 
-export const HOUSE = Object.freeze({
+export const STARTER = Object.freeze({
+  name: 'starter-house',
+  cells: Object.freeze(parseLayers(STARTER_LAYERS)),
+  footprint: { minX: 0, maxX: 4, minZ: 0, maxZ: 4, minY: 0, maxY: 3 },
+});
+export const NORDIC = Object.freeze({
   name: 'nordic-cottage',
-  cells: Object.freeze(parseLayers(LAYERS)),
+  cells: Object.freeze(parseLayers(NORDIC_LAYERS)),
   footprint: { minX: 0, maxX: 8, minZ: 0, maxZ: 10, minY: 0, maxY: 8 },
 });
+/** The house this team builds. */
+export const HOUSE = { starter: STARTER, nordic: NORDIC }[DESIGN];
 
 /**
  * Construction progress: share of required (non-air) blueprint blocks that are currently correct.
@@ -128,7 +147,7 @@ export function survey(blueprint, origin, nameAt, propsAt = null) {
 }
 
 export function hasSupport(cell, nameAt) {
-  if (cell.material === 'oak_door') {
+  if (cell.material === wood('door')) {
     const below = nameAt(cell.x, cell.y - 1, cell.z);
     return below != null && !isSoft(below);
   }
@@ -145,8 +164,8 @@ export function placeable(report, origin, nameAt, blueprint = HOUSE) {
   const ring = c => Math.max(Math.abs(c.x - centre.x), Math.abs(c.z - centre.z));
   // The door goes in last: until then the doorway is the only way into the house, and the top of
   // the roof can only be reached from inside.
-  const othersMissing = report.supports.length > 0 || report.missing.some(c => !PASSIVE.has(c.material) && c.material !== 'oak_door');
-  const candidates = [...report.supports, ...report.missing.filter(c => !PASSIVE.has(c.material) && !(othersMissing && c.material === 'oak_door'))];
+  const othersMissing = report.supports.length > 0 || report.missing.some(c => !PASSIVE.has(c.material) && c.material !== wood('door'));
+  const candidates = [...report.supports, ...report.missing.filter(c => !PASSIVE.has(c.material) && !(othersMissing && c.material === wood('door')))];
   return candidates.filter(c => hasSupport(c, nameAt)).sort((a, b) =>
     (a.material === 'filler' ? -1 : 0) - (b.material === 'filler' ? -1 : 0) ||
     a.y - b.y ||

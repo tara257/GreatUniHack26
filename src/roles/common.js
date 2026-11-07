@@ -110,7 +110,7 @@ export function siteView(ctx, v) {
   // unless it can see that nothing is needed at all.
   const nothingNeeded = v.siteLoaded && !Object.keys(v.siteNeed).length;
   v.shortfall = v.storage || nothingNeeded
-    ? rawShortfall(v.siteNeed, merge(v.storage?.contents, v.inv))
+    ? rawShortfall(v.siteNeed, merge(v.storage?.contents, v.inv), { furnaceNear: v.furnaceNear })
     : null;
   return v;
 }

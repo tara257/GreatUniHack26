@@ -1,6 +1,7 @@
 // Placement rules shared by the builder and by any agent helping it.
 // Pure: works only from the view produced by siteView() in common.js.
 import { total, subtract } from '../items.js';
+import { wood, pretty } from '../design.js';
 import { requirements, canSupply, cellKey, blueprintNeeds } from '../blueprint.js';
 import { COMPONENTS } from '../plan.js';
 import { STORAGE_STALE_MS } from './common.js';
@@ -40,17 +41,17 @@ export function fetchFromStorage(v, only = null) {
   if (!available.length) return null;
   return {
     type: 'withdraw', wants: available.map(item => ({ group: item, count: Math.min(need[item], 64) })),
-    say: `Fetching ${available.map(i => i.replace('oak_', '')).join(', ')} from storage`,
+    say: `Fetching ${available.map(pretty).join(', ')} from storage`,
   };
 }
 
-/** Craft a component the house still needs from oak planks we carry, if we have enough for a batch. */
+/** Craft a component the house still needs from planks we carry, if we have enough for a batch. */
 export function craftFromCarried(v) {
   const need = outstanding(v);
   for (const { item, planks, makes } of COMPONENTS) {
-    if (!need[item]) continue;
-    const batches = Math.min(Math.ceil(need[item] / makes), Math.floor(total(v.inv, 'oak_planks') / planks));
-    if (batches > 0) return { type: 'make', item, count: Math.min(need[item], batches * makes), say: `Crafting ${item.replace('oak_', 'oak ')} from my planks` };
+    if (!need[item] || !planks) continue;
+    const batches = Math.min(Math.ceil(need[item] / makes), Math.floor(total(v.inv, wood('planks')) / planks));
+    if (batches > 0) return { type: 'make', item, count: Math.min(need[item], batches * makes), say: `Crafting ${pretty(item)} from my planks` };
   }
   return null;
 }
@@ -78,7 +79,7 @@ export function helpBuild(v) {
   if (houseComplete(v)) return { type: 'done', say: 'The house is complete; nothing left to do' };
   if (!v.siteLoaded || v.distanceToSite > 24) return { type: 'travel', target: v.origin.offset(4, 0, -4), range: 3, say: 'Heading to the house to help the builder' };
   const cell = nextPlacement(v, { helper: true });
-  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Helping the builder: placing ${cell.material.replace('oak_', 'oak ')}` };
+  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Helping the builder: placing ${pretty(cell.material)}` };
   // Hand over building materials we cannot place yet, so the builder can use them; fetch only what we can place now.
   const placeableNow = placeableMaterials(v);
   const giveBack = handOver(v, placeableNow, 'Helping the builder: storing materials it will need');

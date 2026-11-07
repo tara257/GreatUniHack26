@@ -1,5 +1,6 @@
 // BUILDER: compares the house blueprint with the world and places whatever it can.
 import { total } from '../items.js';
+import { WOOD, wood, pretty } from '../design.js';
 import { requirements, cellKey } from '../blueprint.js';
 import { baseView, siteView, findTargets } from './common.js';
 import { free, outstanding, nextPlacement, fetchFromStorage, houseComplete, craftFromCarried, isHigh, BUILD_ITEMS, placeableMaterials, handOver } from './construction.js';
@@ -48,7 +49,7 @@ function choose(v) {
   // 2. Place the first buildable cell we hold material for. Missing one material
   //    simply moves us on to another part of the house.
   const cell = nextPlacement(v);
-  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Placing ${cell.material.replace('oak_', 'oak ')}` };
+  if (cell) return { type: 'place', target: cell, group: cell.material, say: `Placing ${pretty(cell.material)}` };
 
   // 3. Roof cells too high to reach, or that could not be reached by walking: pillar up and place from there.
   const roof = v.placeable.filter(c => total(v.inv, c.material) > 0 &&
@@ -58,11 +59,11 @@ function choose(v) {
     if (v.fillerTarget) return { type: 'mine', target: v.fillerTarget, say: 'Digging dirt for a temporary pillar' };
   }
 
-  // 4. Make what is missing from what we carry: oak planks from spare oak logs, then stairs/fences/door.
+  // 4. Make what is missing from what we carry: planks from spare logs, then stairs/fences/door.
   const need = outstanding(v);
-  const logsNeeded = requirements(report.missing).oak_log || 0;
-  if (need.oak_planks && total(v.inv, 'oak_log') > logsNeeded) {
-    return { type: 'craft_planks', count: need.oak_planks, wood: 'oak', say: 'Turning spare oak logs into planks' };
+  const logsNeeded = requirements(report.missing)[wood('log')] || 0;
+  if (need[wood('planks')] && total(v.inv, wood('log')) > logsNeeded) {
+    return { type: 'craft_planks', count: need[wood('planks')], wood: WOOD, say: `Turning spare ${pretty(wood('logs'))} into planks` };
   }
   const craft = craftFromCarried(v);
   if (craft) return craft;
@@ -75,7 +76,7 @@ function choose(v) {
   const giveBack = handOver(v, placeableNow, 'Returning materials I cannot place yet to storage');
   if (giveBack) return giveBack;
 
-  const list = Object.entries(need).filter(([g]) => g !== 'filler').map(([g, n]) => `${n} ${g.replace('oak_', '')}`).join(', ');
+  const list = Object.entries(need).filter(([g]) => g !== 'filler').map(([g, n]) => `${n} ${pretty(g)}`).join(', ');
   return { type: 'wait', ms: 4000, say: list ? `Waiting for materials: ${list}` : 'Waiting for a reachable position to build' };
 }
 

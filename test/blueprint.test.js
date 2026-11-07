@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HOUSE, survey, placeable, requirements, blueprintNeeds, cellKey, progress, parseLayers } from '../src/blueprint.js';
+import { NORDIC as HOUSE, STARTER, survey, placeable as placeableFor, requirements, blueprintNeeds as needsFor, cellKey, progress, parseLayers } from '../src/blueprint.js';
+const placeable = (report, origin, nameAt) => placeableFor(report, origin, nameAt, HOUSE);
+const blueprintNeeds = () => needsFor(HOUSE);
+
 
 const origin = { x: 100, y: 64, z: 200 };
 // A tiny fake world: flat grass below y=64, air above, plus explicit overrides.
@@ -126,4 +129,20 @@ test('the door is placed last, keeping the doorway open while the roof is built'
     if (next[0].material === 'oak_door') { w.blocks.set(`${next[0].x},${next[0].y + 1},${next[0].z}`, 'oak_door'); assert.equal(others.length, 0); }
   }
   assert.equal(survey(HOUSE, origin, w.nameAt).missing.length, 0);
+});
+
+test('the starter house is the original 5x5 design in one wood, with glass windows', () => {
+  assert.deepEqual(needsFor(STARTER), { oak_stairs: 1, cobblestone: 25, oak_log: 8, oak_planks: 45, oak_door: 1, glass_pane: 2 });
+  assert.deepEqual(STARTER.cells.filter(c => c.material === 'glass_pane').map(c => [c.x, c.y, c.z]), [[0, 2, 2], [4, 2, 2]]);
+  // It can be built start to finish, door last.
+  const w = world();
+  for (let i = 0; i < 200; i++) {
+    const report = survey(STARTER, origin, w.nameAt);
+    if (!report.missing.length) break;
+    const next = placeableFor(report, origin, w.nameAt, STARTER);
+    assert.ok(next.length);
+    build(w, next[0]);
+    if (next[0].material === 'oak_door') w.blocks.set(`${next[0].x},${next[0].y + 1},${next[0].z}`, 'oak_door');
+  }
+  assert.equal(progress(survey(STARTER, origin, w.nameAt)).percent, 100);
 });

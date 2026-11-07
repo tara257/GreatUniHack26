@@ -1,6 +1,7 @@
 // SCOUT: sweeps outward from spawn in a square spiral and reports useful resources over team chat.
 // Reports queue while communication is down and are sent once it returns (see channel.js).
 import pathfinderModule from 'mineflayer-pathfinder';
+import { wood } from '../design.js';
 import { storageAnchor, waypointOffset as spiral } from '../world.js';
 import { baseView, siteView, findTargets, reportOnce } from './common.js';
 import { helpBuild } from './construction.js';
@@ -13,7 +14,7 @@ export const waypointOffset = (step, spacing = SPACING, maxRing = MAX_RING) => s
 
 // What the scout looks for, and whether only blocks open to the air count (reachable without digging).
 const RESOURCES = [
-  { kind: 'Wood', test: name => name === 'oak_log', exposed: false }, // the house is all oak
+  { kind: 'Wood', test: name => name === wood('log'), exposed: false }, // only the house wood
   { kind: 'Stone', test: name => name === 'stone', exposed: true },
   { kind: 'Sand', test: name => name === 'sand', exposed: true },
   { kind: 'Coal', test: name => name === 'coal_ore', exposed: true },

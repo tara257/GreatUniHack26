@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as crafter from '../src/roles/crafter.js';
 import * as scout from '../src/roles/scout.js';
-import { blueprintNeeds } from '../src/blueprint.js';
+import { NORDIC, STARTER, blueprintNeeds as needsFor } from '../src/blueprint.js';
+const blueprintNeeds = () => needsFor(NORDIC);
 import { Vec3 } from '../src/world.js';
 
 const view = over => ({ inv: {}, lowHealth: false, full: false, storageExists: true, angle: 0,
@@ -59,4 +60,25 @@ test('scout spiral visits every ring position once per cycle and spreads outward
   assert.equal(seen.size, perCycle);
   assert.deepEqual(scout.waypointOffset(perCycle), scout.waypointOffset(0));
   assert.equal(Math.max(...Object.values(scout.waypointOffset(0)).map(Math.abs)), scout.SPACING);
+});
+
+test('crafter makes glass windows: collects sand, smelts it in a furnace, then crafts panes', () => {
+  const need = needsFor(STARTER);
+  const made = { oak_door: 1, oak_stairs: 1 };
+  // No cobblestone to spare for a furnace yet: carry on with other parts (nothing else to do here).
+  assert.notEqual(crafter.decide(view({ need, storage: { contents: { ...made }, age: 0 } })).type, 'smelt_glass');
+  // Furnace affordable, no sand: go and get sand.
+  const getSand = crafter.decide(view({ need, furnaceNear: true, sand: new Vec3(1, 62, 1), storage: { contents: { ...made }, age: 0 } }));
+  assert.equal(getSand.type, 'mine');
+  // Part-way through a sand trip, it finishes the trip even if storage looks out of date.
+  assert.equal(crafter.decide(view({ need, inv: { sand: 3 }, knownSand: [40, 62, 3], storage: null })).type, 'travel');
+  // Sand, fuel and a furnace: smelt.
+  const smelt = crafter.decide(view({ need, furnaceNear: true, storage: { contents: { ...made, sand: 6, oak_planks: 4 }, age: 0 } }));
+  assert.equal(smelt.type, 'smelt_glass');
+  assert.ok(!smelt.inputs.some(i => i.group === 'cobblestone'), 'furnace already exists');
+  const build = crafter.decide(view({ need, storage: { contents: { ...made, sand: 6, oak_planks: 4, cobblestone: 33 }, age: 0 } }));
+  assert.ok(build.inputs.some(i => i.group === 'cobblestone' && i.count === 8), 'cobblestone for a new furnace');
+  // Glass made: craft the panes.
+  const panes = crafter.decide(view({ need, storage: { contents: { ...made, glass: 6 }, age: 0 } }));
+  assert.deepEqual([panes.type, panes.item], ['make', 'glass_pane']);
 });
