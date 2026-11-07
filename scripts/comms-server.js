@@ -16,7 +16,7 @@ const relay=createRelay({port,host:process.env.COMMS_HOST || '127.0.0.1',
   ...(process.env.COMMS_OPERATOR_TOKEN?{operatorToken:process.env.COMMS_OPERATOR_TOKEN}:{})});
 const urls=await relay.listen();
 saveOperatorToken(urls.httpUrl,relay.operatorToken);
-console.log('Autonomous Colony communication relay');
+console.log('Colony communication relay');
 console.log(`Agent endpoint: ${urls.wsUrl}`);
 console.log(`Operator API: ${urls.httpUrl}/api/state`);
 console.log(`Observer endpoint: ${urls.observerUrl}`);

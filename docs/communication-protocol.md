@@ -1,4 +1,4 @@
-# Autonomous Colony communication protocol — v1
+# Colony communication protocol — v1
 
 This is an optional communication service for independent Minecraft agents. It relays observations, requests, and completion reports. It does not choose actions, assign tasks, transfer Minecraft items, elect a leader, resolve conflicting beliefs, or operate Minecraft connections.
 

@@ -249,7 +249,7 @@ export function createRelay(options={}) {
   }
   const server=createServer(async(req,res)=>{
     const path=new URL(req.url,'http://relay.local').pathname;
-    if(req.method==='GET' && path==='/health')return json(res,200,{ok:true,service:'Autonomous Colony relay',v:VERSION,serverId});
+    if(req.method==='GET' && path==='/health')return json(res,200,{ok:true,service:'Colony relay',v:VERSION,serverId});
     if(req.method==='POST' && path==='/dashboard/session') {
       if(!allowLocalDashboardSession(req,config.host,server.address().port))return json(res,403,{error:'LOCAL_ORIGIN_REQUIRED'});
       req.resume();return json(res,200,{token:config.operatorToken});

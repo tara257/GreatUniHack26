@@ -1,8 +1,8 @@
-# Autonomous Colony · GreatUniHack26
+# Colony · GreatUniHack26
 
 Five independent Minecraft agents cooperate to build a house, even when their communication links fail.
 
-**Current milestone: a Nordic cottage.** Each agent has a role and runs its own perceive → decide → act loop using deterministic rules (no LLM, no central controller):
+**Current milestone: a shared house.** Each agent has a role and runs its own perceive → decide → act loop using deterministic rules (no LLM, no central controller):
 
 | Agent | Role | What it does on its own |
 | --- | --- | --- |
@@ -12,7 +12,7 @@ Five independent Minecraft agents cooperate to build a house, even when their co
 | Sage_Crafter | Crafter | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
 | Wren_Scout | Scout | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over WebSockets. |
 
-On the first launch all five roles are selected. In the dashboard, tick the roles you want and click **Apply roster**, then **Start work**. Added roles join and start automatically; removed roles leave Minecraft with their memory saved. The choice is remembered for the next launch. Explicit `TEAM_ROLES` (see `.env.example`) overrides the saved selection, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 339-block Nordic cottage.
+On the first launch all five roles are selected. In the dashboard, tick the roles you want and click **Apply roster**, then **Start work**. Added roles join and start automatically; removed roles leave Minecraft with their memory saved. The choice is remembered for the next launch. Explicit `TEAM_ROLES` (see `.env.example`) overrides the saved selection, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 83-block starter house by default, or the 339-block Nordic cottage with `HOUSE_DESIGN=nordic`.
 
 ## Live dashboard
 
@@ -23,7 +23,7 @@ npm ci
 npm run dashboard
 ```
 
-Open **[Autonomous Colony](http://127.0.0.1:8090/)**. In two other terminals, run `npm run server` and `npm run bots` (reuse existing processes if already running). Join Java Edition **1.21.1**, server **localhost:25565**, and type `!team start` in chat. The dashboard is served by the relay on port 8090; there is no separate React development server to start.
+Open **[Colony](http://127.0.0.1:8090/)**. In two other terminals, run `npm run server` and `npm run bots` (reuse existing processes if already running). Join Java Edition **1.21.1**, server **localhost:25565**, and type `!team start` in chat. The dashboard is served by the relay on port 8090; there is no separate React development server to start.
 
 If the relay is already running, `npm run build:dashboard` rebuilds the UI; refresh the browser. Restart the relay after backend changes, and the bots after agent changes. `npm run dashboard` builds the UI and then starts the relay, so do not launch a second copy on the same port.
 
@@ -91,9 +91,10 @@ To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **s
 
 ### Build another house in the same world
 
-Restarting the server keeps the existing world; bots repair or finish the house at their configured plot. To start another house, type `quit` in the bots terminal, choose clear ground with room for the 9×11 cottage, and set `BUILD_ORIGIN=x,y,z` in `.env` (the floor's northwest corner, one block above the ground). Keep storage at its existing location. Add the previous house's bounding box to `PRESERVED_AREAS` so agents will not harvest or dig through it. For example:
+Restarting the server keeps the existing world; bots repair or finish the house at their configured plot. To start another house, type `quit` in the bots terminal, choose clear ground with room for the selected design (5×5 starter house or 9×11 cottage), and set `BUILD_ORIGIN=x,y,z` in `.env` (the floor's northwest corner, one block above the ground). Keep storage at its existing location. Add the previous house's bounding box to `PRESERVED_AREAS` so agents will not harvest or dig through it. For example:
 
 ```dotenv
+HOUSE_DESIGN=nordic
 BUILD_ORIGIN=19,71,60
 PRESERVED_AREAS=[[36,71,40,43,77,48]]
 ```
