@@ -12,7 +12,7 @@ Five independent Minecraft agents cooperate to build a house, even when their co
 | Sage_Crafter | Crafter | Works out which components are still missing and crafts them from storage: door, glass panes (smelting sand), stairs, and planks from surplus logs. |
 | Wren_Scout | Scout | Sweeps a square spiral around spawn and reports wood, stone, sand, coal, iron and water over WebSockets. |
 
-All five agents start by default; set `TEAM_ROLES` (see `.env.example`) to run a subset, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 83-block starter house.
+On the first launch all five roles are selected. In the dashboard, tick the roles you want and click **Apply roster**, then **Start work**. Added roles join and start automatically; removed roles leave Minecraft with their memory saved. The choice is remembered for the next launch. Explicit `TEAM_ROLES` (see `.env.example`) overrides the saved selection, e.g. `TEAM_ROLES=miner,lumberjack,builder`. The shared goal is the 83-block starter house.
 
 ## Live dashboard
 
@@ -27,6 +27,8 @@ Open **[Autonomous Colony](http://127.0.0.1:8090/)**. In two other terminals, ru
 
 If the relay is already running, `npm run build:dashboard` rebuilds the UI; refresh the browser. Restart the relay after backend changes, and the bots after agent changes. `npm run dashboard` builds the UI and then starts the relay, so do not launch a second copy on the same port.
 
+- **Choose who joins Minecraft** controls the independent local bot launcher. Applying a roster joins/removes bots; **Isolate** only blocks their peer messages. **Start work / Pause work** are explicit human controls.
+- **Progress while links are blocked** records confirmed gathering, crafting, deposits, placements and new resource sightings from affected agents. **Start outage demo → Restore & save result → Present evidence** provides a recording-friendly result; **Download evidence** exports JSON. Nothing is backfilled or invented.
 - Five cards show separately reported Minecraft presence, relay/link status, task, inventory and observation age. Unknown or old observations are labelled, not filled with example data.
 - The graph shows real pairwise reachability. Amber dashed links are deliberately blocked; gray links have unavailable or unknown transport. Moving dots correspond to recorded send attempts.
 - House progress and the blueprint come from the builder's actual block survey. Unloaded blocks are marked unobserved. Resources sum fresh carried inventories only, excluding shared chests.
@@ -99,7 +101,7 @@ To fly around as an observer, type `gamemode spectator YOUR_USERNAME` in the **s
 | `!team comms off` | Close each bot's relay adapter locally, leaving Minecraft and its role loop running. |
 | `!team comms on` | Reconnect the relay adapters and exchange current observations. |
 
-The bots terminal also accepts `start`, `pause`, `status`, `comms off`, and `comms on`. These are operator controls, not shared gameplay decisions. Human operator commands remain available during a simulated outage.
+The bots terminal also accepts `start`, `pause`, `status`, `comms off`, `comms on`, and `roles miner,builder` (a comma-separated selection). These are operator controls, not shared gameplay decisions. Human operator commands remain available during a simulated outage.
 
 Bots publish real health, hunger, position, task, inventory, and their own discoveries over WebSockets. Received discoveries feed the existing local role memory; reported inventories do not magically reveal shared chest contents or assign work. Administrator isolation leaves both Minecraft and relay sockets connected while preventing peer delivery. The local `!team comms off` command instead closes the relay socket, so its status correctly differs from a policy-blocked link. In both cases, agents can still observe their own surroundings and perform local work.
 
@@ -129,7 +131,10 @@ Set `PLAYER_NAME` if your Minecraft username is not `b_caul`. True custom skins 
 - **Independence.** No agent waits on another. Without a lumberjack, the miner chops its own wood for a pickaxe. Without a chest, whichever agent has the wood builds one. The builder keeps placing whatever it has and says which materials it is waiting for.
 - **Communication.** Agents publish first sightings of resources (one per 16-block region) as versioned WebSocket observations. Minecraft chat narrates their actions for spectators. When an agent can't see a resource nearby, it travels to the nearest reported location. If it finds nothing there, it marks that spot exhausted in its own memory. Reports queue during a comms outage and replay when comms return.
 - Death locations are remembered as danger areas, and targets near them are avoided. Failed targets are skipped for 30 seconds.
-- The miner may dig through terrain to reach stone but never inside the storage area or the house site. The other agents don't dig while pathfinding.
+- Every role may clear terrain to escape blocked routes; house, storage and utility blocks remain protected. Unreachable targets and escaped animals get a cooldown, and failed exploration changes direction.
+- **Local fallback:** after a persistent shortage, an otherwise idle agent can gather wood, mine stone or make components. It checks its own blueprint and chest observations; it does not receive a central replacement assignment or read the selected roster. Different roles wait different amounts of time (15–75 seconds) to reduce duplication. Progress resets the timer. Isolation alone does not trigger takeover: a still-working miner may already be supplying the shared chest.
+- **Basic survival:** agents eat carried food, hunt visible passive animals when hungry, and search when critically hungry instead of resting forever. They avoid sprinting when hungry or injured. This is not a complete combat, farming or survival system.
+- Minecraft 1.21.1 inventory clicks use full server acknowledgements so unchanged crafting-result slots cannot stall a recipe. Wood crafting chooses compatible planks, and sand trips persist until a useful load is collected.
 
 ## Local server and dependencies
 
@@ -158,4 +163,4 @@ Optional settings are in `.env.example`. The included server is fixed to port 25
 
 `npm test` covers the communication channel (isolation, replay, deduplication, persistence) and every role's decision rules against simulated views. It also includes a blueprint simulation showing that repeatedly placing the builder's next cell completes the whole house. That test checks build order only, not reach or pathfinding.
 
-Live checks with all five Minecraft role bots verified isolation, three-way partitions, restoration and fresh state exchange while their Minecraft connections stayed open. Browser checks exercised the dashboard controls, event filters, pause/resume, connection retry and presentation mode; responsive layouts were checked at desktop and phone widths. A previous live run reached 81/83 observed house blocks. That is not a guarantee that every seed completes: pathfinding, furnace work and terrain can still need tuning. Bots do not yet eat, so sustained survival is unfinished. A dependency occasionally emits `PartialReadError` while reading Minecraft item-component data; the observed bots continued connecting and reporting despite it.
+Live checks with all five Minecraft role bots verified isolation, three-way partitions, restoration and fresh state exchange while their Minecraft connections stayed open. Browser checks exercised roster removal/rejoin, work start/pause, outage capture, JSON download and evidence presentation; responsive layouts were checked at desktop and phone widths. In a measured 68-second outage, the fully isolated miner reported one resource block broken, one crafted item and two new resource sightings. The frozen result correctly showed no house increase in that interval (81/83 before and after). This is agent-reported evidence, not a claim that every seed completes: pathfinding, furnace work and terrain can still need tuning. Basic eating and hunting are implemented; hostile mobs, difficult terrain and long unattended runs remain limitations. A dependency occasionally emits `PartialReadError` while reading Minecraft item-component data; the observed bots continued connecting and reporting despite it.

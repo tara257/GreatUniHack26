@@ -6,7 +6,7 @@ import { STATE_TYPES, validateMessage } from './protocol.js';
 // Bridge existing local discoveries to peer messages. No movement, inventory transfer,
 // task assignment, or Minecraft connection control is available to this class.
 export class MinecraftChannel extends TeamChannel {
-  constructor({agentId,state,save,learn,observe,log=()=>{},notice=()=>{},url,token,clientOptions={}}) {
+  constructor({agentId,state,save,learn,observe,log=()=>{},notice=()=>{},onEvidenceWindow=()=>{},url,token,clientOptions={}}) {
     super({state,save,learn,send:()=>{}});
     this.agentId=agentId;this.observe=observe;this.log=log;this.notice=notice;
     this.transport='websocket';this.link={isolated:false,partition:null};this.closed=false;
@@ -22,13 +22,15 @@ export class MinecraftChannel extends TeamChannel {
           this.client.peerState.set(key,message);
       } catch { delete state.peerReports[key]; }
     }
-    this.client.on('ready',()=>{this.log('WebSocket relay connected; exchanging my own observations.');this.tick();});
+    this.client.on('ready',({link})=>{onEvidenceWindow(link?.evidenceWindow || null);this.log('WebSocket relay connected; exchanging my own observations.');this.tick();});
     this.client.on('offline',()=>{if(!this.closed)this.log('Peer communication unavailable; my Minecraft work continues.');});
     this.client.on('linkState',link=>{
+      onEvidenceWindow(link.evidenceWindow || null);
       const changed=this.link.isolated!==link.isolated || this.link.partition!==link.partition;
       this.link={isolated:link.isolated,partition:link.partition};
       if(changed)this.notice(link.isolated?'My peer messages are isolated; continuing local work.':
         link.partition!==null?`Peer network partition ${link.partition}; continuing local work.`:'Peer links restored; exchanging discoveries.');
+      this.tick();
     });
     this.client.on('handlerError',({error})=>{if(this.online)this.log(`Peer report rejected: ${error.message}`);});
     this.client.on('publishRejected',event=>{

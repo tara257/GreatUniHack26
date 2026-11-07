@@ -13,12 +13,17 @@ export function perceive(ctx) {
   v.need = v.siteNeed;
   v.sand = findTargets(ctx, name => name === 'sand', { maxDistance: 32, exposed: true })[0] || null;
   v.knownSand = v.sand ? null : rememberedTarget(ctx, 'Sand', false);
+  v.gatheringSand = !!ctx.memory.gatheringSand;
   return v;
 }
 
 export function decide(v) {
   if (v.lowHealth) return { type: 'rest', say: 'Low health; resting' };
   if (v.full) return { type: 'deposit', keep: () => 0, say: 'Inventory full; emptying into storage' };
+  if(v.gatheringSand) {
+    if(total(v.inv,'sand')>=6)return {type:'deliver_sand',say:'Returning sand for the house windows'};
+    return sandAction(v);
+  }
   if (!v.storageExists) return { type: 'wait', ms: 5000, say: 'Waiting for shared storage to exist' };
   if (!v.storage || v.storage.age > STORAGE_STALE_MS) return { type: 'inspect_storage', say: 'Checking storage against the blueprint' };
 
@@ -52,8 +57,7 @@ export function decide(v) {
         return { type: 'smelt_glass', count: 6, inputs, say: 'Smelting sand into glass' };
       }
       if (sand < 6 && furnaceOk) {
-        if (v.sand) return { type: 'mine', target: v.sand, say: `Collecting sand for glass (${total(v.inv, 'sand')}/6)` };
-        if (v.knownSand) return { type: 'travel', target: v.knownSand, say: 'Heading to reported sand for glass' };
+        return {...sandAction(v),localGoal:'sand'};
       }
     }
     if (component === 'planks' && spareLogs > 0) {
@@ -67,6 +71,12 @@ export function decide(v) {
   return { type: 'wait', ms: 5000, say: blocked.length ? `Cannot craft ${blocked.join(', ')} yet; waiting for materials` : 'All craftable components are stocked' };
 }
 
+function sandAction(v) {
+  if (v.sand) return {type:'mine',target:v.sand,say:`Collecting sand for glass (${total(v.inv,'sand')}/6)`,localGoal:'sand'};
+  if (v.knownSand) return {type:'travel',target:v.knownSand,say:'Heading to reported sand for glass',localGoal:'sand'};
+  return {type:'explore',angle:v.angle,distance:12,say:'Searching for accessible sand for the windows',localGoal:'sand'};
+}
+
 async function gather(ctx, inputs) {
   const held = counts(ctx.bot);
   const wants = inputs.filter(i => total(held, i.group) < i.count).map(i => ({ group: i.group, count: i.count - total(held, i.group) }));
@@ -75,6 +85,7 @@ async function gather(ctx, inputs) {
 
 // Crafting happens beside storage; results and leftovers go straight back in.
 export const actions = {
+  async deliver_sand(ctx) { await deposit(ctx,name=>name==='sand'?0:999);ctx.memory.gatheringSand=false; },
   async make(ctx, a) {
     await gather(ctx, a.inputs);
     if (a.item === 'door' || a.item === 'stairs') await craftWooden(ctx, a.item, a.count);

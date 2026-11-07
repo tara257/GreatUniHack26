@@ -3,6 +3,8 @@ import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { VERSION, LIMITS, STATE_TYPES, compareState, ProtocolError, requireThat, validateMessage, canonical, validId, object } from './protocol.js';
 import { allowLocalDashboardSession, serveDashboard } from './dashboard-http.js';
+import { OutageEvidence } from './outage-evidence.js';
+import { teamRequest, validateTeamRequest } from '../operator/team-control.js';
 
 const equalToken=(a,b)=>{
   if(typeof a!=='string')return false;
@@ -37,6 +39,7 @@ export function createRelay(options={}) {
     for(const [a,b] of disabledPairs)disabledLinks.add(pairKey(a,b));
   }
   let runId=randomUUID(),runStartedAt=Date.now();
+  const evidence=new OutageEvidence();
   const events=[];
   const counters={accepted:0,delivered:0,expired:0,rejected:0,staleRejected:0};
   const wss=new WebSocketServer({noServer:true,maxPayload:LIMITS.maxPayloadBytes,perMessageDeflate:false});
@@ -69,7 +72,7 @@ export function createRelay(options={}) {
     if(disabledLinks.has(pairKey(from,to)))reasons.push('link-disabled');
     return reasons;
   }
-  function selfLink(a) { return {isolated:a.isolated,partition:partitions?(partitions.get(a.id) ?? 'unassigned'):null}; }
+  function selfLink(a) { return {isolated:a.isolated,partition:partitions?(partitions.get(a.id) ?? 'unassigned'):null,evidenceWindow:evidence.active?.id || null}; }
   function faultPolicy() {
     const groups=new Map();
     for(const [id,group] of partitions || []){if(!groups.has(group))groups.set(group,[]);groups.get(group).push(id);}
@@ -102,7 +105,7 @@ export function createRelay(options={}) {
         minecraft:a.minecraft?report(a.minecraft,now):{value:'unknown',reportedAt:null,receivedAt:null,ageMs:null,stale:true},
         reports:Object.fromEntries(Object.entries(a.reports).map(([type,r])=>[type,report(r,now)])),
         pendingMessages:a.pending.size})),
-      links:links(),recentEvents:[...events]};
+      links:links(),recentEvents:[...events],evidence:evidence.snapshot()};
   }
   function outcome(record,recipient,status) {
     record.deliveries.set(recipient,status);
@@ -176,12 +179,14 @@ export function createRelay(options={}) {
     if(message.type==='STATUS_UPDATE' && order>0 && message.payload.minecraft) {
       a.minecraft={value:message.payload.minecraft.connected?'connected':'disconnected',reportedAt:message.sentAt,receivedAt:acceptedAt};
     }
+    if(message.type==='STATUS_UPDATE' && order>0)evidence.observe(a.id,a.reports[message.type],acceptedAt);
     counters.accepted++;
     changed('message-accepted',{from:a.id,id:message.id,type:message.type,recipients,sentAt:message.sentAt,stateVersion:message.stateVersion});
     send(a.ws,frame('PUBLISH_ACK',{id:message.id,status:'accepted',expiresAt:record.expiresAt,deliveries:Object.fromEntries(record.deliveries)}));
     sweep();
   }
   function networkChanged(kind,details,previous) {
+    evidence.topology(links(),kind);
     config.onFaultChange?.(faultPolicy());
     changed(kind,{actor:'operator',...details});
     const before=new Map(previous.map(link=>[pairKey(link.a,link.b),link]));
@@ -225,6 +230,7 @@ export function createRelay(options={}) {
     for(const a of agents.values())a.isolated=false;
     for(const key of Object.keys(counters))counters[key]=0;
     events.length=0;runId=randomUUID();runStartedAt=Date.now();
+    evidence.reset(links());
     // Keep accepted queues, deduplication and observations. A new run never rewinds Minecraft.
     networkChanged('simulation-reset',{runId,preservedPendingMessages:true},previous);
   }
@@ -252,6 +258,13 @@ export function createRelay(options={}) {
     if(!equalToken(req.headers.authorization,`Bearer ${config.operatorToken}`))return json(res,401,{error:'UNAUTHORIZED'});
     try {
       if(req.method==='GET' && path==='/api/state')return json(res,200,snapshot());
+      if(path==='/api/roster' && ['GET','POST'].includes(req.method)) {
+        if(!['127.0.0.1','::1','localhost'].includes(config.host))return json(res,403,{error:'LOCAL_OPERATOR_ONLY'});
+        const request=req.method==='GET'?{action:'status'}:await readBody(req);
+        validateTeamRequest(request);
+        try { return json(res,200,await (config.teamControl || teamRequest)(request)); }
+        catch(error) { return json(res,503,{error:'LAUNCHER_UNAVAILABLE',message:error.message}); }
+      }
       if(req.method==='POST' && ['/api/isolation','/api/partitions','/api/links','/api/heal','/api/reset'].includes(path)) {
         const body=await readBody(req); requireThat(object(body),'Expected an object');
         if(path==='/api/isolation')setIsolation(body.agentId,body.isolated);
@@ -305,6 +318,7 @@ export function createRelay(options={}) {
           registered=existing || {id:input.agentId,isolated:isolatedIds.has(input.agentId),pending:new Map(),reports:{},latestState:{},minecraft:null,lastHeartbeatAt:null};
           Object.assign(registered,{ws,sessionId:randomUUID(),connectedAt:Date.now(),disconnectedAt:null,lastSeenAt:Date.now(),lastPongAt:null});
           agents.set(registered.id,registered);clearTimeout(registrationTimer);
+          evidence.topology(links(),'membership-changed');
           changed('agent-connected',{agentId:registered.id});
           send(ws,frame('REGISTERED',{agentId:registered.id,sessionId:registered.sessionId,serverId,
             heartbeatIntervalMs:config.heartbeatIntervalMs,limits:LIMITS,link:selfLink(registered)}));
@@ -320,6 +334,7 @@ export function createRelay(options={}) {
       clearTimeout(registrationTimer);observers.delete(ws);
       if(registered?.ws===ws) {
         Object.assign(registered,{ws:null,disconnectedAt:Date.now(),lastDisconnect:{code,reason:reason.toString()}});
+        evidence.disconnected(registered.id);
         changed('agent-disconnected',{agentId:registered.id,code});
       }
     });
